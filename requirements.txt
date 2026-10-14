@@ -1,0 +1,7 @@
+# Python packages for the host side of the Pulse Sensor System.
+# Install with:  pip3 install -r requirements.txt
+numpy
+scipy
+matplotlib
+pyserial
+FreeSimpleGUI
