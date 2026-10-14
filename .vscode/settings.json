@@ -1,0 +1,11 @@
+{
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.DS_Store": true
+  },
+  "files.associations": {
+    "*.ino": "cpp"
+  },
+  "python.analysis.extraPaths": ["host"],
+  "python.terminal.executeInFileDir": true
+}
