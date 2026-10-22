@@ -14,6 +14,9 @@ hardware against the simulated ESP32 in packet_sim.py.
   6. Real-time timing with the real parameters: alarm at 5 s, reconnection
      within 10 s of the ESP32 returning (Reqt 17), host latency (Reqt 12).
 
+  7. HR alarm limits (20-250 BPM) sent from the GUI to the ESP32, echoed back in
+     every packet, re-sent until confirmed, restored after an ESP32 reset.
+
 Run:  python3 test_comms.py          (about 40 s; add --quick to skip test 6)
 
 Author: Bianca Dibden
@@ -105,13 +108,15 @@ def test_packet_format():
     print("\nTest 1 - packet format")
     samples = [1800 + 10 * i for i in range(50)]
     p = pf.build_packet(65535, 71.4, True, samples)
+    check("limits echoed in packet", pf.parse_packet(pf.build_packet(1, 70, False, samples, 55, 120)).high_limit == 120)
     q = pf.parse_packet(p)
-    check("round trip and fixed length", len(p) == 268 and q.seq == 65535 and q.mcu_hr == 71.4
-          and q.recording and q.samples == samples, f"{len(p)} bytes")
+    check("round trip and fixed length", len(p) == 276 and q.seq == 65535 and q.mcu_hr == 71.4
+          and q.recording and q.samples == samples
+          and (q.low_limit, q.high_limit) == (40, 200), f"{len(p)} bytes")
 
     lengths = {len(pf.build_packet(s, h, r, [v] * 50))
                for s in (0, 9, 65535) for h in (0, 7.25, 100, 999.9) for r in (0, 1) for v in (0, 4095)}
-    check("every packet is 268 bytes", lengths == {268}, str(lengths))
+    check("every packet is 276 bytes", lengths == {276}, str(lengths))
 
     def reject(name, line, reason):
         try:
@@ -145,13 +150,47 @@ def test_packet_format():
             f.write('#include <stdio.h>\n#include "packet.h"\nint main(){char b[PACKET_BUF_SIZE];uint16_t s[50];'
                     'float h[]={0,71.4f,99.96f,999.99f,-1};uint16_t q[]={0,1,65535,42,7};'
                     'for(int k=0;k<5;k++){for(int i=0;i<50;i++)s[i]=(k*517+i*83)%5000;'
-                    'fwrite(b,1,buildPacket(b,sizeof b,q[k],h[k],k%2,s),stdout);}return 0;}')
+                    'fwrite(b,1,buildPacket(b,sizeof b,q[k],h[k],k%2,20+k*10,200+k*10,s),stdout);}return 0;}')
         subprocess.run([cxx, "-o", exe, main, os.path.join(src, "packet.cpp"), "-I", src], check=True)
         out = subprocess.run([exe], capture_output=True, check=True).stdout
     lines = [l + b"\n" for l in out.split(b"\n")[:-1]]
-    same = all(pf.build_packet(*(lambda r: (r.seq, r.mcu_hr, r.recording, r.samples))(pf.parse_packet(l))) == l
+    same = all(pf.build_packet(*(lambda r: (r.seq, r.mcu_hr, r.recording, r.samples, r.low_limit, r.high_limit))(pf.parse_packet(l))) == l
                for l in lines)
     check("ESP32 packet.cpp output is byte-identical to Python", len(lines) == 5 and same)
+    check_limits_command_cpp(cxx, src)
+
+
+def check_limits_command_cpp(cxx, src):
+    """
+    The ESP32's parseLimitsCommand must accept exactly what the Python
+    build_limits_command produces and reject the same bad commands.
+
+    Author: Bianca Dibden
+    """
+    good = [pf.build_limits_command(lo, hi) for lo, hi in ((20, 21), (40, 200), (55, 120), (249, 250))]
+    good_text = [c for c in good]
+    bad = [b"$LIM,055,120*00\n",                                                            # wrong checksum
+           b"$LIM,120,055*" + f"{pf.checksum(b'LIM,120,055'):02X}".encode() + b"\n",       # low > high
+           b"$LIM,010,120*" + f"{pf.checksum(b'LIM,010,120'):02X}".encode() + b"\n",       # below range
+           b"$LIM,050,300*" + f"{pf.checksum(b'LIM,050,300'):02X}".encode() + b"\n",       # above range
+           b"$LIM,05x,120*" + f"{pf.checksum(b'LIM,05x,120'):02X}".encode() + b"\n",       # not digits
+           b"$XYZ,055,120*" + f"{pf.checksum(b'XYZ,055,120'):02X}".encode() + b"\n"]       # wrong command
+    lines = good_text + bad
+    with tempfile.TemporaryDirectory() as tmp:
+        main = os.path.join(tmp, "lim.cpp")
+        exe = os.path.join(tmp, "lim")
+        with open(main, "w") as f:
+            f.write('#include <stdio.h>\n#include <string.h>\n#include "packet.h"\nint main(){char l[128];'
+                    'while(fgets(l,sizeof l,stdin)){uint16_t a=0,b=0;'
+                    'bool ok=parseLimitsCommand(l,strlen(l),&a,&b);'
+                    'printf("%d %u %u\\n",ok,ok?a:0,ok?b:0);}return 0;}')
+        subprocess.run([cxx, "-o", exe, main, os.path.join(src, "packet.cpp"), "-I", src], check=True)
+        out = subprocess.run([exe], input=b"".join(lines), capture_output=True, check=True).stdout.decode().split("\n")
+    results = [tuple(int(v) for v in l.split()) for l in out if l]
+    check("ESP32 parseLimitsCommand accepts every valid command",
+          results[:len(good)] == [(1, 20, 21), (1, 40, 200), (1, 55, 120), (1, 249, 250)], str(results[:len(good)]))
+    check("ESP32 parseLimitsCommand rejects every bad command",
+          all(r[0] == 0 for r in results[len(good):]) and len(results) == len(lines), str(results[len(good):]))
 
 
 def test_sequence_tracker():
@@ -300,6 +339,83 @@ def test_recording_flag():
           recs[-1].recording and any("Recording started" in e for e in evs))
 
 
+def test_limits():
+    """
+    Test 8: HR alarm limits sent from the GUI to the ESP32.
+
+    Author: Bianca Dibden
+    """
+    print("\nTest 8 - HR limits sent to the ESP32")
+    c = pf.build_limits_command(55, 120)
+    check("command format", c == b"$LIM,055,120*4B\n" and pf.parse_limits_command(c) == (55, 120), str(c))
+    bad_rejected = True
+    for lo, hi in ((10, 100), (100, 100), (120, 60), (50, 251)):
+        try:
+            pf.build_limits_command(lo, hi)
+            bad_rejected = False
+        except ValueError:
+            pass
+    check("out-of-range limits refused (20-250 BPM, low < high)", bad_rejected)
+    flipped = bytearray(c); flipped[6] = ord("9")
+    try:
+        pf.parse_limits_command(bytes(flipped))
+        check("corrupted command rejected", False)
+    except pf.PacketError:
+        check("corrupted command rejected", True)
+    link = PPGLink("SIM")
+    try:
+        link.set_limits(300, 400)
+        check("PPGLink.set_limits refuses invalid limits", False)
+    except ValueError:
+        check("PPGLink.set_limits refuses invalid limits", True)
+
+    # Normal: ESP32 starts with the defaults, GUI sets 55-120.
+    dev = SimulatedDevice(period=0.1)
+    link = PPGLink("SIM", serial_factory=dev.open, **FAST)
+    recs, evs = [], []
+    link.set_limits(55, 120)
+    link.start()
+    t = wait_for(link, lambda: link.limits_confirmed, 4, recs, evs)
+    wait_for(link, lambda: False, 0.3, recs, evs)      # let a following packet reach the record list
+    check("limits applied on the ESP32 and confirmed", t is not None and (dev.low_limit, dev.high_limit) == (55, 120)
+          and (recs[-1].device_low_limit, recs[-1].device_high_limit) == (55, 120), f"{t:.2f} s" if t else "")
+    check("sent and confirmed events logged", any("sent to ESP32" in e for e in evs)
+          and any("confirmed by ESP32" in e for e in evs))
+
+    # Change while running.
+    link.set_limits(50, 150)
+    t = wait_for(link, lambda: link.limits_confirmed, 4, recs, evs)
+    check("limits changed while running", t is not None and (dev.low_limit, dev.high_limit) == (50, 150))
+
+    # Commands lost on the way are re-sent until the echo matches.
+    dev.drop_commands = 2
+    link.set_limits(45, 130)
+    t = wait_for(link, lambda: link.limits_confirmed, 8, recs, evs)
+    check("lost commands are re-sent until confirmed", t is not None and (dev.low_limit, dev.high_limit) == (45, 130),
+          f"{t:.2f} s" if t else "")
+
+    # ESP32 reset: it reverts to 40-200, the host notices and sets them again.
+    dev.reset(downtime=0.05)
+    check("ESP32 reboots with default limits", (dev.low_limit, dev.high_limit) == (40, 200))
+    t = wait_for(link, lambda: link.limits_confirmed and dev.low_limit == 45, 8, recs, evs)
+    check("limits restored after ESP32 reset", t is not None and (dev.low_limit, dev.high_limit) == (45, 130),
+          f"{t:.2f} s" if t else "")
+    link.stop()
+
+    # Limits set before the ESP32 is reachable are delivered when it appears.
+    dev = SimulatedDevice(period=0.1)
+    dev.power_off()
+    link = PPGLink("SIM", serial_factory=dev.open, **FAST)
+    link.set_limits(60, 100)
+    link.start()
+    recs, evs = [], []
+    wait_for(link, lambda: False, 0.5, recs, evs)
+    dev.power_on()
+    t = wait_for(link, lambda: link.limits_confirmed, 5, recs, evs)
+    check("limits set while disconnected are sent on connect", t is not None and (dev.low_limit, dev.high_limit) == (60, 100))
+    link.stop()
+
+
 if __name__ == "__main__":
     test_packet_format()
     test_sequence_tracker()
@@ -308,6 +424,7 @@ if __name__ == "__main__":
     test_loss_and_recovery("silent")
     test_loss_and_recovery("error")
     test_recording_flag()
+    test_limits()
     if "--quick" not in sys.argv:
         test_real_timing()
     print(f"\n{sum(RESULTS)}/{len(RESULTS)} checks passed.")

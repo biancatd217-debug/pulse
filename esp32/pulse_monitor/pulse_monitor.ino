@@ -7,7 +7,7 @@
 ** Button: active LOW, debounce count 5.
 ** Buzzer: sounds below 40 or above 200 BPM.
 ** LCD: displays live HR and recording/alarm state.
-** Bluetooth SPP: every 50 samples (1 s) a 268-byte packet is sent to the
+** Bluetooth SPP: every 50 samples (1 s) a 276-byte packet is sent to the
 **   host with sequence number, MCU HR, recording state and the 50 raw
 **   samples (format in packet.h; host side in Code/host/comms.py).
 **
@@ -128,11 +128,19 @@ unsigned long beat_flash_start = 0;
 // BUZZER
 // ======================================================
 
-#define LOW_HR_LIMIT 40.0f
-#define HIGH_HR_LIMIT 200.0f
 #define ALARM_FREQUENCY 2000
 
 bool buzzer_on = false;
+
+// HR alarm limits (BPM). Power-up defaults; the host overwrites them with the
+// limits the user sets in the GUI ($LIM command) and they are echoed in every
+// data packet so the host can confirm they were received.
+uint16_t low_hr_limit = 40;
+uint16_t high_hr_limit = 200;
+
+char cmd_buf[24];                      // incoming host command (one line)
+uint8_t cmd_len = 0;
+bool cmd_overflow = false;
 
 // ======================================================
 // SCHEDULER
@@ -165,6 +173,7 @@ uint16_t replay_index = 0;
 void btCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param);
 uint16_t readSample();
 void sendPacket();
+void serviceBluetoothCommands();
 
 // ======================================================
 // SETUP
@@ -208,6 +217,9 @@ void loop() {
 
   lastTickTime = micros();
   unsigned long now = millis();
+
+  // BLUETOOTH (Bianca): apply any HR limits sent by the host GUI.
+  serviceBluetoothCommands();
 
   // ----------------------------------------------------
   // 1. BUTTON AND BLUE LED
@@ -351,8 +363,8 @@ void loop() {
   bool alarm_required =
       signal_valid &&
       heart_rate_valid &&
-      (heart_rate < LOW_HR_LIMIT ||
-       heart_rate > HIGH_HR_LIMIT);
+      (heart_rate < low_hr_limit ||
+       heart_rate > high_hr_limit);
 
   if (alarm_required && !buzzer_on) {
     tone(BUZZER_PIN, ALARM_FREQUENCY);
@@ -419,10 +431,10 @@ void updateLcd() {
   const char* pulseStatus = "NO PULSE";
 
   if (displayValid) {
-    if (heart_rate < LOW_HR_LIMIT) {
+    if (heart_rate < low_hr_limit) {
       pulseStatus = "LOW";
     }
-    else if (heart_rate > HIGH_HR_LIMIT) {
+    else if (heart_rate > high_hr_limit) {
       pulseStatus = "HIGH";
     }
     else {
@@ -505,6 +517,40 @@ uint16_t readSample()
   replay_index = (replay_index + 1) % PULSE_DATA_LEN;
   return v;
 #endif
+}
+
+void serviceBluetoothCommands()
+/*
+** Reads any bytes the host has sent and applies a valid "$LIM,LLL,UUU*CC"
+** command to the HR alarm limits. Non-blocking (never waits for data) so it
+** can run every 20 ms tick. Corrupted, over-long or out-of-range commands are
+** ignored; the host notices because the limits echoed in the data packets
+** do not change, and re-sends.
+**
+** Author: Bianca Dibden
+*/
+{
+  int budget = 64;                       // bytes per tick, keeps the tick short
+  while (budget-- > 0 && SerialBT.available()) {
+    int c = SerialBT.read();
+    if (c < 0) {
+      break;
+    }
+    if (c == '\n') {
+      uint16_t lo, hi;
+      if (!cmd_overflow && parseLimitsCommand(cmd_buf, cmd_len, &lo, &hi)) {
+        low_hr_limit = lo;
+        high_hr_limit = hi;
+        Serial.printf("[BT] HR limits set to %u-%u BPM\n", (unsigned)lo, (unsigned)hi);
+      }
+      cmd_len = 0;
+      cmd_overflow = false;
+    } else if (cmd_len < sizeof(cmd_buf)) {
+      cmd_buf[cmd_len++] = (char)c;
+    } else {
+      cmd_overflow = true;               // too long to be a command; wait for the newline
+    }
+  }
 }
 
 void sendPacket()

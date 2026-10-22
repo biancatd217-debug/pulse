@@ -27,6 +27,7 @@ import argparse
 import csv
 import os
 import random
+import select
 import threading
 import time
 
@@ -106,6 +107,8 @@ class SimulatedDevice:
         self.swap_prob, self.junk_prob = swap_prob, junk_prob
         self.loss_mode = loss_mode
         self.recording = False
+        self.low_limit, self.high_limit = pf.DEFAULT_LOW_LIMIT, pf.DEFAULT_HIGH_LIMIT
+        self.drop_commands = 0   # tests: silently lose the next N host commands
         self.lock = threading.Lock()
         self.powered = True
         self.t_on = time.monotonic()
@@ -133,6 +136,8 @@ class SimulatedDevice:
         with self.lock:
             self.powered = True
             self.t_on = time.monotonic()
+            # like the real ESP32, limits revert to the defaults on boot
+            self.low_limit, self.high_limit = pf.DEFAULT_LOW_LIMIT, pf.DEFAULT_HIGH_LIMIT
 
     def reset(self, downtime=0.5):
         """
@@ -164,7 +169,26 @@ class SimulatedDevice:
         chunk = [self.samples[i] for i in idx]
         hr = self.rates[idx[-1]] if self.rates else 0.0
         self.packets_built += 1
-        return pf.build_packet(k, hr, self.recording, chunk)
+        return pf.build_packet(k, hr, self.recording, chunk, self.low_limit, self.high_limit)
+
+    def receive_command(self, line):
+        """
+        Handle one host -> ESP32 command line as the firmware does: apply a
+        valid limits command, silently ignore anything corrupted or invalid.
+
+        Returns
+        -------
+        bool
+            True if the limits were applied.
+
+        Author: Bianca Dibden
+        """
+        try:
+            low, high = pf.parse_limits_command(line)
+        except pf.PacketError:
+            return False
+        self.low_limit, self.high_limit = low, high
+        return True
 
     def faulty_stream(self, packets):
         """
@@ -232,6 +256,31 @@ class SimulatedSerial:
         self.next_k = device.packets_due()   # only packets produced after connecting
         self.buf = bytearray()
         self.is_open = True
+        self.tx_buf = bytearray()
+
+    def write(self, data):
+        """
+        Accept bytes from the host; complete lines are passed to the device
+        as commands (lost if the link is down, like a real Bluetooth write).
+
+        Author: Bianca Dibden
+        """
+        if not self.is_open:
+            raise SerialException("port is closed")
+        if not self._alive():
+            if self.dev.loss_mode == "error":
+                raise SerialException("device disconnected")
+            return len(data)
+        self.tx_buf.extend(data)
+        while b"\n" in self.tx_buf:
+            i = self.tx_buf.index(b"\n")
+            line = bytes(self.tx_buf[:i + 1])
+            del self.tx_buf[:i + 1]
+            if self.dev.drop_commands > 0:
+                self.dev.drop_commands -= 1
+            else:
+                self.dev.receive_command(line)
+        return len(data)
 
     def _alive(self):
         """True if the link has not been broken since opening. Author: Bianca Dibden"""
@@ -304,8 +353,17 @@ def run_pty(args):
     print(f"Open it with:  python3 comms.py {name}")
     print("Ctrl+C to stop.")
     k = 0
+    rx = bytearray()
     try:
         while True:
+            if select.select([master], [], [], 0)[0]:
+                rx.extend(os.read(master, 256))
+                while b"\n" in rx:
+                    i = rx.index(b"\n")
+                    line = bytes(rx[:i + 1])
+                    del rx[:i + 1]
+                    if dev.receive_command(line):
+                        print(f"HR limits set to {dev.low_limit}-{dev.high_limit} BPM")
             due = dev.packets_due()
             if due > k:
                 data = dev.faulty_stream([dev.build(i) for i in range(k, due)])

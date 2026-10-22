@@ -24,7 +24,8 @@ uint8_t packetChecksum(const char *payload, size_t len)
 }
 
 size_t buildPacket(char *out, size_t outSize, uint16_t seq, float heartRate,
-                   bool recording, const uint16_t *samples)
+                   bool recording, uint16_t lowLimit, uint16_t highLimit,
+                   const uint16_t *samples)
 /*
 ** Writes one complete, null-terminated packet into out.
 **
@@ -32,6 +33,7 @@ size_t buildPacket(char *out, size_t outSize, uint16_t seq, float heartRate,
 ** seq        - packet sequence number
 ** heartRate  - MCU pulse rate in BPM (clamped to 0-999.9; 0 = no pulse)
 ** recording  - recording state from the button
+** lowLimit, highLimit - HR alarm limits in use (BPM, clamped to 0-999)
 ** samples    - SAMPLES_PER_PACKET raw ADC values (clamped to 0-4095)
 **
 ** returns - number of bytes written (PACKET_LEN), or 0 if out is too small.
@@ -49,8 +51,12 @@ size_t buildPacket(char *out, size_t outSize, uint16_t seq, float heartRate,
   if (!(heartRate >= 0.0f)) heartRate = 0.0f;
   if (heartRate > 999.9f) heartRate = 999.9f;
 
-  int pos = snprintf(out, outSize, "$%05u,%05.1f,%u",
-                     (unsigned)seq, heartRate, recording ? 1u : 0u);
+  if (lowLimit > 999) lowLimit = 999;
+  if (highLimit > 999) highLimit = 999;
+
+  int pos = snprintf(out, outSize, "$%05u,%05.1f,%u,%03u,%03u",
+                     (unsigned)seq, heartRate, recording ? 1u : 0u,
+                     (unsigned)lowLimit, (unsigned)highLimit);
 
   for (int i = 0; i < SAMPLES_PER_PACKET; i++) {
     unsigned s = samples[i] > 4095 ? 4095 : samples[i];
@@ -60,4 +66,68 @@ size_t buildPacket(char *out, size_t outSize, uint16_t seq, float heartRate,
   uint8_t cs = packetChecksum(out + 1, pos - 1);   // skip the '$'
   pos += snprintf(out + pos, outSize - pos, "*%02X\n", cs);
   return (size_t)pos;
+}
+
+static bool parseDigits3(const char *p, uint16_t *value)
+/*
+** Parses exactly three decimal digits.
+**
+** Author: Bianca Dibden
+*/
+{
+  if (p[0] < '0' || p[0] > '9' || p[1] < '0' || p[1] > '9' || p[2] < '0' || p[2] > '9') {
+    return false;
+  }
+  *value = (uint16_t)((p[0] - '0') * 100 + (p[1] - '0') * 10 + (p[2] - '0'));
+  return true;
+}
+
+static int hexValue(char c)
+/*
+** Value of an upper- or lower-case hex digit, or -1.
+**
+** Author: Bianca Dibden
+*/
+{
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return -1;
+}
+
+bool parseLimitsCommand(const char *line, size_t len, uint16_t *low, uint16_t *high)
+/*
+** Validates "$LIM,LLL,UUU*CC": length, framing, command name, checksum, digits
+** and range (LIMIT_MIN <= low < high <= LIMIT_MAX). A trailing "\r\n" is
+** tolerated. Nothing is written to low/high unless every check passes.
+**
+** Author: Bianca Dibden
+*/
+{
+  while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+    len--;
+  }
+  if (len != LIMITS_CMD_LEN - 1 || line[0] != '$' || line[len - 3] != '*') {
+    return false;
+  }
+  const char *payload = line + 1;                     // "LIM,LLL,UUU"
+  if (payload[0] != 'L' || payload[1] != 'I' || payload[2] != 'M' ||
+      payload[3] != ',' || payload[7] != ',') {
+    return false;
+  }
+  int hi = hexValue(line[len - 2]);
+  int lo = hexValue(line[len - 1]);
+  if (hi < 0 || lo < 0 || packetChecksum(payload, len - 4) != (uint8_t)(hi * 16 + lo)) {
+    return false;
+  }
+  uint16_t l, u;
+  if (!parseDigits3(payload + 4, &l) || !parseDigits3(payload + 8, &u)) {
+    return false;
+  }
+  if (l < LIMIT_MIN || u > LIMIT_MAX || l >= u) {
+    return false;
+  }
+  *low = l;
+  *high = u;
+  return true;
 }
