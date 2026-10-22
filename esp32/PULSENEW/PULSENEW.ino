@@ -11,11 +11,7 @@
 ** Bluetooth name: AbiESP32
 ** Packet: 50 raw samples plus HR/state/sequence each second, built by
 ** buildPacket() in packet.cpp so it matches host/packet_format.py exactly
-** (276-byte '$...*CC' text packet, see packet.h).
-**
-** The host GUI sets the HR alarm limits with a '$LIM,LLL,UUU*CC' command.
-** They default to 40/200 BPM at power-up, drive the buzzer and LCD, and
-** are echoed in every packet so the host can confirm they were received.
+** (268-byte '$...*CC' text packet, see packet.h).
 **
 ** Keep switch.h, switch.cpp, packet.h and packet.cpp in this folder.
 */
@@ -153,11 +149,8 @@ const uint32_t FLASH_MS = 100UL;
 bool redOn = false;
 uint32_t flashStartMs = 0;
 
-// HR alarm limits (BPM). Power-up defaults; the host GUI changes them with a
-// $LIM command, handled in the Bluetooth task. Single 16-bit writes, so the
-// sampling loop always reads a whole value.
-volatile uint16_t lowHr = 40;
-volatile uint16_t highHr = 200;
+const float LOW_HR = 40.0f;
+const float HIGH_HR = 200.0f;
 const uint16_t BUZZER_HZ = 2000;
 
 bool buzzerOn = false;
@@ -182,7 +175,6 @@ void updateLcd();
 
 void bufferBluetoothSample(uint16_t raw);
 void bluetoothSender(void* parameter);
-void serviceBluetoothCommands();
 
 // ======================================================
 // SETUP
@@ -406,7 +398,7 @@ void loop() {
   bool alarm =
       amplitudeOK &&
       hrValid &&
-      (heartRate < lowHr || heartRate > highHr);
+      (heartRate < LOW_HR || heartRate > HIGH_HR);
 
   if (alarm && !buzzerOn) {
     tone(BUZZER_PIN, BUZZER_HZ);
@@ -565,10 +557,10 @@ void updateLcd() {
   else if (!amplitudeOK || !hrValid) {
     status = "NO PULSE";
   }
-  else if (heartRate < lowHr) {
+  else if (heartRate < LOW_HR) {
     status = "LOW";
   }
-  else if (heartRate > highHr) {
+  else if (heartRate > HIGH_HR) {
     status = "HIGH";
   }
   else {
@@ -639,61 +631,15 @@ void bufferBluetoothSample(uint16_t raw) {
 // BACKGROUND BLUETOOTH SENDER
 // ======================================================
 
-void serviceBluetoothCommands() {
-  // Reads any bytes the host has sent and applies a valid
-  // "$LIM,LLL,UUU*CC" command to the HR alarm limits. Never blocks.
-  // Corrupted, over-long or out-of-range commands are ignored; the host
-  // sees that the echoed limits did not change and re-sends.
-  static char cmdBuf[24];
-  static uint8_t cmdLen = 0;
-  static bool cmdOverflow = false;
-
-  int budget = 64;   // bytes per call keeps each pass short
-
-  while (budget-- > 0 && SerialBT.available()) {
-    int c = SerialBT.read();
-
-    if (c < 0) {
-      break;
-    }
-
-    if (c == '\n') {
-      uint16_t low, high;
-
-      if (!cmdOverflow &&
-          parseLimitsCommand(cmdBuf, cmdLen, &low, &high)) {
-        lowHr = low;
-        highHr = high;
-
-        Serial.printf("[BT] HR limits set to %u-%u BPM\n",
-                      (unsigned)low, (unsigned)high);
-      }
-
-      cmdLen = 0;
-      cmdOverflow = false;
-    }
-    else if (cmdLen < sizeof(cmdBuf)) {
-      cmdBuf[cmdLen++] = (char)c;
-    }
-    else {
-      cmdOverflow = true;   // too long to be a command; wait for newline
-    }
-  }
-}
-
 void bluetoothSender(void* parameter) {
-  // This task owns all Bluetooth reads and writes.
   BtPacket packet;
   char frame[PACKET_BUF_SIZE];
 
   for (;;) {
-    serviceBluetoothCommands();
-
-    // Wake at least every 20 ms to poll for host commands.
     if (xQueueReceive(
           btQueue,
           &packet,
-          pdMS_TO_TICKS(20)
+          portMAX_DELAY
         ) != pdTRUE) {
       continue;
     }
@@ -708,8 +654,6 @@ void bluetoothSender(void* parameter) {
       (uint16_t)(packet.sequence & 0xFFFF),
       packet.hr,
       packet.recording != 0,
-      lowHr,
-      highHr,
       packet.raw
     );
 

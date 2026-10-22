@@ -68,16 +68,6 @@ char packetBuf[PACKET_BUF_SIZE];
 volatile bool btConnected = false; // written by the Bluetooth callback
 bool lastReportedConnected = false;
 
-// HR alarm limits (BPM). Power-up defaults; the host overwrites them with the
-// limits the user sets in the GUI ($LIM command) and they are echoed in every
-// data packet so the host can confirm they were received.
-uint16_t lowHrLimit = 40;
-uint16_t highHrLimit = 200;
-
-char cmd_buf[24];                      // incoming host command (one line)
-uint8_t cmd_len = 0;
-bool cmd_overflow = false;
-
 uint16_t replayIndex = 0;
 unsigned long packetsSent = 0;
 unsigned long packetsNotSent = 0;
@@ -158,40 +148,6 @@ float getMcuHeartRate()
 // ----------------------------------------------------------------------------
 // Packet sending
 // ----------------------------------------------------------------------------
-void serviceBluetoothCommands()
-/*
-** Reads any bytes the host has sent and applies a valid "$LIM,LLL,UUU*CC"
-** command to the HR alarm limits. Non-blocking (never waits for data) so it
-** can run every 20 ms tick. Corrupted, over-long or out-of-range commands are
-** ignored; the host notices because the limits echoed in the data packets
-** do not change, and re-sends.
-**
-** Author: Bianca Dibden
-*/
-{
-  int budget = 64;                       // bytes per tick, keeps the tick short
-  while (budget-- > 0 && SerialBT.available()) {
-    int c = SerialBT.read();
-    if (c < 0) {
-      break;
-    }
-    if (c == '\n') {
-      uint16_t lo, hi;
-      if (!cmd_overflow && parseLimitsCommand(cmd_buf, cmd_len, &lo, &hi)) {
-        lowHrLimit = lo;
-        highHrLimit = hi;
-        Serial.printf("[BT] HR limits set to %u-%u BPM\n", (unsigned)lo, (unsigned)hi);
-      }
-      cmd_len = 0;
-      cmd_overflow = false;
-    } else if (cmd_len < sizeof(cmd_buf)) {
-      cmd_buf[cmd_len++] = (char)c;
-    } else {
-      cmd_overflow = true;               // too long to be a command; wait for the newline
-    }
-  }
-}
-
 void sendPacket()
 /*
 ** Builds the packet from the last 50 samples and sends it over Bluetooth.
@@ -202,7 +158,7 @@ void sendPacket()
 */
 {
   size_t len = buildPacket(packetBuf, sizeof(packetBuf), seq, getMcuHeartRate(),
-                           recording, lowHrLimit, highHrLimit, samples);
+                           recording, samples);
   if (len != PACKET_LEN) {
     Serial.printf("[PKT] build error: %u bytes\n", (unsigned)len);
   } else if (btConnected) {
@@ -272,7 +228,6 @@ void loop()
   }
 
   // ---- 20 ms tasks ----
-  serviceBluetoothCommands();            // HR limits from the host GUI
   if (button.update(digitalRead(BUTTON_PIN)) && button.state()) {
     recording = !recording;            // latching: toggle on each press (Lab 3)
     Serial.printf("[BTN] Recording %s\n", recording ? "ON" : "OFF");

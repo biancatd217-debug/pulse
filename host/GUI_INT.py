@@ -60,7 +60,6 @@ from datetime import datetime
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-import packet_format as pf
 from comms import PPGLink, STATUS_CONNECTED, STATUS_CONNECTING
 # ============================================================
 # GUI COLOURS AND FONTS
@@ -2202,9 +2201,6 @@ def main():
 
     link = PPGLink(port)
     link.start()
-    # The GUI's limits are the ones the user sees; send them to the ESP32 so
-    # its LCD status and buzzer agree (re-sent automatically until confirmed).
-    link.set_limits(low_hr_limit, high_hr_limit)
 
     # ========================================================
     # MAIN EVENT LOOP
@@ -2374,11 +2370,6 @@ def main():
                 elif new_low_limit >= new_high_limit:
                     window["-HR_LIMIT_ERROR-"].update("Invalid HR limits")
                     add_log(window, "Invalid HR limits: low must be below high.")
-                elif not pf.valid_limits(round(new_low_limit), round(new_high_limit)):
-                    add_log(
-                        window,
-                        f"Invalid HR limits: must be {pf.LIMIT_MIN}-{pf.LIMIT_MAX} BPM."
-                    )
                 else:
                     window["-HR_LIMIT_ERROR-"].update("")
                     low_hr_limit = new_low_limit
@@ -2389,7 +2380,6 @@ def main():
                         window,
                         f"HR limits updated: {low_hr_limit:.1f}-{high_hr_limit:.1f} BPM."
                     )
-                    link.set_limits(low_hr_limit, high_hr_limit)
                     if latest_record is not None and not link.no_data_alarm:
                         show_hr(current_hr, latest_record.signal_message)
             except ValueError:

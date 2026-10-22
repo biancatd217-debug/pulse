@@ -11,9 +11,6 @@ PPGLink runs in a background thread and:
   - on loss of comms keeps retrying to reconnect and resumes automatically
     when the ESP32 comes back (Reqts 16, 17),
   - passes each valid packet through the signal processing in ppg_dsp.py,
-  - sends the user's HR alarm limits to the ESP32 (set_limits) and re-sends
-    them until the limits echoed in the data packets match, so the ESP32's
-    LCD and buzzer use the same limits as the GUI,
   - hands the GUI one HostRecord per packet plus timestamped log events in
     the required "<time.ctime()>: <message>" format (Reqt 13).
 
@@ -27,8 +24,6 @@ event loop (e.g. after each window.read(timeout=100)).
     for line in link.get_events():  ...  # append to the system log window
     link.no_data_alarm                  # True while no packet for >= 5 s
     link.status                         # 'Connected' / 'Connecting' / 'Disconnected'
-    link.set_limits(55, 120)            # send HR alarm limits to the ESP32
-    link.limits_confirmed               # True once the ESP32 reports using them
     ...
     link.stop()
 
@@ -66,7 +61,6 @@ except ImportError:  # allows the simulator/tests to run without pyserial
 BAUD = 115200
 READ_TIMEOUT_S = 0.1      # serial read timeout; keeps the thread responsive
 RETRY_INTERVAL_S = 1.0    # wait between reconnection attempts (Reqt 17: < 10 s)
-LIMITS_RESEND_S = 1.0     # re-send unconfirmed HR limits this often
 RECONNECT_AFTER_S = 4.0   # no bytes at all for this long on an open port -> close and reopen
 ALARM_AFTER_S = 5.0       # no-packet alarm threshold (Reqt 14)
 OUT_OF_ORDER_WINDOW = 5   # a seq up to this far behind = late packet; further = MCU restart
@@ -110,8 +104,6 @@ class HostRecord:
     latency_s : float
         Host processing time for this packet (s). End-to-end latency is this
         plus up to 1 s of buffering on the MCU plus Bluetooth transmission.
-    device_low_limit, device_high_limit : int
-        HR alarm limits (BPM) the ESP32 reports it is currently using.
 
     Author: Bianca Dibden
     """
@@ -127,8 +119,6 @@ class HostRecord:
     signal_ok: bool
     signal_message: str
     latency_s: float
-    device_low_limit: int = pf.DEFAULT_LOW_LIMIT
-    device_high_limit: int = pf.DEFAULT_HIGH_LIMIT
 
 
 class SequenceTracker:
@@ -254,13 +244,6 @@ class PPGLink:
         self._valid_since_connect = 0
         self._attempts = 0
 
-        # HR alarm limits: wanted (set by the GUI) vs reported by the ESP32.
-        self._limits_lock = threading.Lock()
-        self._wanted_limits = None           # (low, high) or None if never set
-        self._device_limits = None           # (low, high) from the latest packet
-        self._limit_tx_time = 0.0
-        self._limit_tx_count = 0
-
     # ----------------------------------------------------------------- public
     def start(self):
         """
@@ -311,44 +294,6 @@ class PPGLink:
         Author: Bianca Dibden
         """
         return self._drain(self._events)
-
-    def set_limits(self, low, high):
-        """
-        Set the HR alarm limits to be used by the ESP32 (LCD status and
-        buzzer). Non-blocking: the link thread sends the command and re-sends
-        it every LIMITS_RESEND_S until the ESP32 reports the same limits in
-        its data packets, including after a reconnection or ESP32 reset.
-
-        Parameters
-        ----------
-        low, high : float
-            Limits in BPM; rounded to whole BPM. Must satisfy
-            LIMIT_MIN <= low < high <= LIMIT_MAX after rounding.
-
-        Raises
-        ------
-        ValueError
-            If the limits are out of range (nothing is sent).
-
-        Author: Bianca Dibden
-        """
-        low, high = int(round(low)), int(round(high))
-        if not pf.valid_limits(low, high):
-            raise ValueError(f"HR limits must satisfy {pf.LIMIT_MIN} <= low < high <= {pf.LIMIT_MAX} BPM")
-        with self._limits_lock:
-            self._wanted_limits = (low, high)
-            self._limit_tx_time = 0.0
-            self._limit_tx_count = 0
-
-    @property
-    def limits_confirmed(self):
-        """
-        True if limits were set and the ESP32 has reported using them.
-
-        Author: Bianca Dibden
-        """
-        with self._limits_lock:
-            return self._wanted_limits is not None and self._wanted_limits == self._device_limits
 
     @property
     def seconds_since_packet(self):
@@ -401,7 +346,6 @@ class PPGLink:
                     self._stop.wait(self.retry_interval)
                     continue
             self._read_once()
-            self._service_limits()
             self._check_alarm()
             self._check_silence()
 
@@ -436,10 +380,6 @@ class PPGLink:
         self._connected_at = time.monotonic()
         self._last_rx = self._connected_at
         self._valid_since_connect = 0
-        with self._limits_lock:
-            self._device_limits = None     # unknown until the first packet
-            self._limit_tx_time = 0.0
-            self._limit_tx_count = 0
         self.status = STATUS_CONNECTED
         self.stats["connects"] += 1
         what = "Connected" if self.stats["connects"] == 1 else "Reconnected"
@@ -502,35 +442,6 @@ class PPGLink:
             start = self._buf.rfind(pf.START)
             del self._buf[:start if start > 0 else len(self._buf)]
 
-    def _service_limits(self):
-        """
-        Send the wanted HR limits to the ESP32 if it is not yet using them
-        (at most once per LIMITS_RESEND_S). Runs in the link thread, the only
-        place the port is written.
-
-        Author: Bianca Dibden
-        """
-        if self._ser is None:
-            return
-        with self._limits_lock:
-            wanted, device = self._wanted_limits, self._device_limits
-            if wanted is None or wanted == device:
-                return
-            if time.monotonic() - self._limit_tx_time < LIMITS_RESEND_S:
-                return
-            self._limit_tx_time = time.monotonic()
-            self._limit_tx_count += 1
-            attempt = self._limit_tx_count
-        try:
-            self._ser.write(pf.build_limits_command(*wanted))
-        except (SerialException, OSError) as e:
-            self._lost(short_error(e))
-            return
-        if attempt == 1:
-            self._log(f"HR limits {wanted[0]}-{wanted[1]} BPM sent to ESP32")
-        elif attempt in (3, 10) or attempt % 30 == 0:
-            self._log(f"HR limits not yet confirmed by ESP32 - re-sending (attempt {attempt})")
-
     def _handle_line(self, line):
         """
         Validate one line and, if valid, process it into a HostRecord.
@@ -567,14 +478,6 @@ class PPGLink:
             self._log(f"Sequence restarted at {pkt.seq} (ESP32 reset?)")
             self.processor.reset()
 
-        device_limits = (pkt.low_limit, pkt.high_limit)
-        with self._limits_lock:
-            changed = device_limits != self._device_limits
-            self._device_limits = device_limits
-            confirmed = changed and device_limits == self._wanted_limits
-        if confirmed:
-            self._log(f"HR limits {device_limits[0]}-{device_limits[1]} BPM confirmed by ESP32")
-
         t0 = time.perf_counter()
         result = self.processor.process_packet(pkt.samples)
         rec = HostRecord(
@@ -585,7 +488,6 @@ class PPGLink:
             host_hr=result.host_hr, hr_fft=result.hr_fft,
             signal_ok=result.quality.ok, signal_message=result.quality.message(),
             latency_s=time.perf_counter() - t0,
-            device_low_limit=pkt.low_limit, device_high_limit=pkt.high_limit,
         )
         if self.last_record is not None and rec.recording != self.last_record.recording:
             self._log("Recording started" if rec.recording else "Recording stopped")

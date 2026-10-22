@@ -21,13 +21,8 @@ py comms.py COM5                # live view from the real ESP32 (use your COM nu
 ```
 On Mac/Linux use `python3` instead of `py`.
 
-## Packet format (ESP32 → host, 1 per second, always 276 bytes)
-`$SSSSS,HHH.H,R,LLL,UUU,s01,...,s50*CC\n` — sequence number, MCU pulse rate (BPM), recording state,
-HR alarm limits in use on the ESP32, 50 raw ADC samples, XOR checksum. See `host/packet_format.py` and `esp32/bt_packet_sender/packet.h`.
-
-## HR alarm limits (host → ESP32)
-The limits set in the GUI are sent as `$LIM,LLL,UUU*CC\n` (whole BPM, 20–250, low < high). The ESP32 uses them
-for the LCD status and buzzer (defaults 40/200 at power-up), echoes them in every data packet, and the host
-re-sends until they match (also after a reconnect or ESP32 reset).
+## Packet format (ESP32 → host, 1 per second, always 268 bytes)
+`$SSSSS,HHH.H,R,s01,...,s50*CC\n` — sequence number, MCU pulse rate (BPM), recording state,
+50 raw ADC samples, XOR checksum. See `host/packet_format.py` and `esp32/bt_packet_sender/packet.h`.
 
 Authors: Bianca Dibden (comms + signal processing), Abi, Alva

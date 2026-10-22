@@ -4,7 +4,7 @@ Bluetooth packet format for the Pulse Sensor System (BMET2922 Major Project).
 One packet is sent by the ESP32 every second (Reqt 18). It is plain ASCII text,
 modelled on NMEA 0183 GPS sentences:
 
-    $SSSSS,HHH.H,R,LLL,UUU,s01,s02,...,s50*CC\\n
+    $SSSSS,HHH.H,R,s01,s02,...,s50*CC\\n
 
     $       start character - marks the start of a packet so the host can
             re-synchronise after partial or corrupted data
@@ -12,10 +12,6 @@ modelled on NMEA 0183 GPS sentences:
     HHH.H   MCU pulse rate in BPM, 1 decimal place, 000.0 = no valid pulse
     R       recording state from the hardware button, 0 or 1 (the current
             state, not a toggle event, so a lost packet cannot desync it)
-    LLL     low HR alarm limit currently active on the ESP32, whole BPM
-    UUU     high HR alarm limit currently active on the ESP32, whole BPM
-            (echoed in every packet so the host can confirm that the limits
-            it sent were received - see build_limits_command)
     sNN     50 raw ADC samples, 4 digits each (0000-4095), oldest first,
             one every 20 ms = the last second of data
     *       end of data, checksum follows
@@ -24,28 +20,15 @@ modelled on NMEA 0183 GPS sentences:
     \\n      end of packet
 
 Every field is zero-padded to a fixed width, so every packet is exactly
-PACKET_LEN = 276 bytes (Reqt 18: all packets the same length).
+PACKET_LEN = 268 bytes (Reqt 18: all packets the same length).
 
 Why text rather than binary: it can be read directly in the Arduino Serial
 Monitor while debugging, there is no little-/big-endian ambiguity between the
 ESP32 and the host, and '\\n' plus '$' give simple framing. The cost is size
-(276 B vs ~116 B binary), which is negligible for Bluetooth SPP at 1 packet/s.
+(268 B vs ~108 B binary), which is negligible for Bluetooth SPP at 1 packet/s.
 
-Host -> ESP32 command (HR alarm limits set by the user in the GUI):
-
-    $LIM,LLL,UUU*CC\\n
-
-    LIM     command name
-    LLL     new low limit, whole BPM, 3 digits
-    UUU     new high limit, whole BPM, 3 digits
-    CC      checksum, as above (over "LIM,LLL,UUU")
-
-Limits must satisfy LIMIT_MIN <= low < high <= LIMIT_MAX. The ESP32 ignores
-a command that is corrupted or out of range; it echoes the limits it is
-using in every data packet, and the host re-sends until they match.
-
-The ESP32 side of this format is in Code/esp32/pulse_monitor/packet.cpp
-(and the copy in bt_packet_sender). Both sides must be changed together.
+The ESP32 side of this format is in Code/esp32/bt_packet_sender/packet.cpp.
+Both sides must be changed together.
 
 Author: Bianca Dibden
 Date: 15-Oct-2026
@@ -62,15 +45,10 @@ SAMPLES_PER_PACKET = 50
 SEQ_MODULO = 65536
 ADC_MAX = 4095
 HR_MAX = 999.9
-LIMIT_MIN = 20           # lowest / highest HR alarm limit accepted (BPM)
-LIMIT_MAX = 250
-DEFAULT_LOW_LIMIT = 40   # limits the ESP32 uses at power-up
-DEFAULT_HIGH_LIMIT = 200
 
-# 1 ($) + 6 (SSSSS,) + 6 (HHH.H,) + 2 (R,) + 8 (LLL,UUU,) + 50*4 + 49 commas + 1 (*) + 2 (CC) + 1 (\n)
-PACKET_LEN = 1 + 6 + 6 + 2 + 8 + SAMPLES_PER_PACKET * 4 + (SAMPLES_PER_PACKET - 1) + 1 + 2 + 1
-assert PACKET_LEN == 276
-LIMITS_CMD_LEN = 16   # '$LIM,LLL,UUU*CC' without the newline is 15; with it, 16
+# 1 ($) + 6 (SSSSS,) + 6 (HHH.H,) + 2 (R,) + 50*4 + 49 commas + 1 (*) + 2 (CC) + 1 (\n)
+PACKET_LEN = 1 + 6 + 6 + 2 + SAMPLES_PER_PACKET * 4 + (SAMPLES_PER_PACKET - 1) + 1 + 2 + 1
+assert PACKET_LEN == 268
 
 
 class PacketError(ValueError):
@@ -95,8 +73,6 @@ class Packet:
         Pulse rate calculated on the ESP32 (BPM); 0.0 means no valid pulse.
     recording : bool
         Recording state from the hardware button.
-    low_limit, high_limit : int
-        HR alarm limits (BPM) currently active on the ESP32.
     samples : list of int
         50 raw ADC samples, oldest first.
 
@@ -105,8 +81,6 @@ class Packet:
     seq: int
     mcu_hr: float
     recording: bool
-    low_limit: int
-    high_limit: int
     samples: list
 
 
@@ -131,8 +105,7 @@ def checksum(payload: bytes) -> int:
     return c
 
 
-def build_packet(seq: int, mcu_hr: float, recording: bool, samples,
-                 low_limit: int = DEFAULT_LOW_LIMIT, high_limit: int = DEFAULT_HIGH_LIMIT) -> bytes:
+def build_packet(seq: int, mcu_hr: float, recording: bool, samples) -> bytes:
     """
     Build a packet exactly as the ESP32 does. Used by the simulator and tests.
 
@@ -146,8 +119,6 @@ def build_packet(seq: int, mcu_hr: float, recording: bool, samples,
         Recording state.
     samples : sequence of int
         Exactly 50 samples, clamped to 0-4095.
-    low_limit, high_limit : int
-        HR alarm limits to echo (BPM, 0-999).
 
     Returns
     -------
@@ -159,8 +130,7 @@ def build_packet(seq: int, mcu_hr: float, recording: bool, samples,
     if len(samples) != SAMPLES_PER_PACKET:
         raise ValueError(f"need {SAMPLES_PER_PACKET} samples, got {len(samples)}")
     hr = min(max(float(mcu_hr), 0.0), HR_MAX)
-    fields = [f"{seq % SEQ_MODULO:05d}", f"{hr:05.1f}", "1" if recording else "0",
-              f"{min(max(int(low_limit), 0), 999):03d}", f"{min(max(int(high_limit), 0), 999):03d}"]
+    fields = [f"{seq % SEQ_MODULO:05d}", f"{hr:05.1f}", "1" if recording else "0"]
     fields += [f"{min(max(int(s), 0), ADC_MAX):04d}" for s in samples]
     payload = ",".join(fields).encode("ascii")
     pkt = START + payload + CHECKSUM_SEP + f"{checksum(payload):02X}".encode("ascii") + END
@@ -208,14 +178,13 @@ def parse_packet(line: bytes) -> Packet:
         raise PacketError("bad checksum")
 
     fields = payload.split(b",")
-    if len(fields) != 5 + SAMPLES_PER_PACKET:
+    if len(fields) != 3 + SAMPLES_PER_PACKET:
         raise PacketError(f"wrong field count ({len(fields)})")
     try:
         seq = int(fields[0])
         mcu_hr = float(fields[1])
         rec = fields[2]
-        low_limit, high_limit = int(fields[3]), int(fields[4])
-        samples = [int(f) for f in fields[5:]]
+        samples = [int(f) for f in fields[3:]]
     except ValueError:
         raise PacketError("non-numeric field") from None
     if rec not in (b"0", b"1"):
@@ -226,78 +195,4 @@ def parse_packet(line: bytes) -> Packet:
         raise PacketError("MCU HR out of range")
     if any(s < 0 or s > ADC_MAX for s in samples):
         raise PacketError("sample out of ADC range")
-    return Packet(seq=seq, mcu_hr=mcu_hr, recording=rec == b"1",
-                  low_limit=low_limit, high_limit=high_limit, samples=samples)
-
-
-def valid_limits(low, high) -> bool:
-    """
-    True if (low, high) are acceptable HR alarm limits:
-    LIMIT_MIN <= low < high <= LIMIT_MAX (whole BPM).
-
-    Author: Bianca Dibden
-    """
-    return LIMIT_MIN <= low < high <= LIMIT_MAX
-
-
-def build_limits_command(low: int, high: int) -> bytes:
-    """
-    Build the host -> ESP32 command that sets the HR alarm limits.
-
-    Parameters
-    ----------
-    low, high : int
-        New limits in whole BPM; must satisfy valid_limits().
-
-    Returns
-    -------
-    bytes
-        '$LIM,LLL,UUU*CC\\n'
-
-    Raises
-    ------
-    ValueError
-        If the limits are out of range.
-
-    Author: Bianca Dibden
-    """
-    low, high = int(low), int(high)
-    if not valid_limits(low, high):
-        raise ValueError(f"limits must satisfy {LIMIT_MIN} <= low < high <= {LIMIT_MAX}")
-    payload = f"LIM,{low:03d},{high:03d}".encode("ascii")
-    return START + payload + CHECKSUM_SEP + f"{checksum(payload):02X}".encode("ascii") + END
-
-
-def parse_limits_command(line: bytes) -> tuple:
-    """
-    Validate and decode a limits command (what the ESP32 does on receipt).
-
-    Returns
-    -------
-    (low, high) : tuple of int
-
-    Raises
-    ------
-    PacketError
-        If the line is malformed, fails its checksum or is out of range.
-
-    Author: Bianca Dibden
-    """
-    line = line.rstrip(b"\r\n")
-    if len(line) != LIMITS_CMD_LEN - 1:
-        raise PacketError(f"wrong length ({len(line)} bytes)")
-    if line[:1] != START or line[-3:-2] != CHECKSUM_SEP:
-        raise PacketError("bad framing")
-    payload = line[1:-3]
-    try:
-        if int(line[-2:], 16) != checksum(payload):
-            raise PacketError("bad checksum")
-        name, low, high = payload.split(b",")
-        low, high = int(low), int(high)
-    except ValueError:
-        raise PacketError("non-numeric field") from None
-    if name != b"LIM":
-        raise PacketError("unknown command")
-    if not valid_limits(low, high):
-        raise PacketError("limits out of range")
-    return low, high
+    return Packet(seq=seq, mcu_hr=mcu_hr, recording=rec == b"1", samples=samples)
