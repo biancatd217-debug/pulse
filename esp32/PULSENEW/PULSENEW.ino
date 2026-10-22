@@ -9,9 +9,15 @@
 ** LCD: RS=23, E=22, D4=21, D5=19, D6=18, D7=25
 **
 ** Bluetooth name: AbiESP32
-** Packet: 50 raw samples plus HR/state/sequence each second.
+** Packet: 50 raw samples plus HR/state/sequence each second, built by
+** buildPacket() in packet.cpp so it matches host/packet_format.py exactly
+** (276-byte '$...*CC' text packet, see packet.h).
 **
-** Keep switch.h and switch.cpp in this folder.
+** The host GUI sets the HR alarm limits with a '$LIM,LLL,UUU*CC' command.
+** They default to 40/200 BPM at power-up, drive the buzzer and LCD, and
+** are echoed in every packet so the host can confirm they were received.
+**
+** Keep switch.h, switch.cpp, packet.h and packet.cpp in this folder.
 */
 
 #include <Arduino.h>
@@ -24,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "switch.h"
+#include "packet.h"
 
 #if !defined(CONFIG_BT_SPP_ENABLED)
 #error This sketch requires a classic ESP32 with Bluetooth SPP enabled.
@@ -50,16 +57,12 @@ BluetoothSerial SerialBT;
 const char* BT_NAME = "AbiESP32";
 bool bluetoothReady = false;
 
-const uint16_t PACKET_SAMPLES = 50;
-
-// Includes newline, excludes terminating null character.
-const size_t PACKET_BYTES = 275;
+const uint16_t PACKET_SAMPLES = SAMPLES_PER_PACKET;   // 50, from packet.h
 
 struct BtPacket {
-  uint32_t sequence;
-  float hr;
+  uint32_t sequence;    // sent modulo 65536 (host wraps at 65536)
+  float hr;             // 0 = no valid pulse
   uint8_t recording;
-  uint8_t valid;
   uint16_t raw[PACKET_SAMPLES];
 };
 
@@ -150,8 +153,11 @@ const uint32_t FLASH_MS = 100UL;
 bool redOn = false;
 uint32_t flashStartMs = 0;
 
-const float LOW_HR = 40.0f;
-const float HIGH_HR = 200.0f;
+// HR alarm limits (BPM). Power-up defaults; the host GUI changes them with a
+// $LIM command, handled in the Bluetooth task. Single 16-bit writes, so the
+// sampling loop always reads a whole value.
+volatile uint16_t lowHr = 40;
+volatile uint16_t highHr = 200;
 const uint16_t BUZZER_HZ = 2000;
 
 bool buzzerOn = false;
@@ -176,6 +182,7 @@ void updateLcd();
 
 void bufferBluetoothSample(uint16_t raw);
 void bluetoothSender(void* parameter);
+void serviceBluetoothCommands();
 
 // ======================================================
 // SETUP
@@ -219,7 +226,7 @@ void setup() {
     if (xTaskCreatePinnedToCore(
           bluetoothSender,
           "BTsender",
-          4096,
+          6144,
           nullptr,
           1,
           nullptr,
@@ -399,7 +406,7 @@ void loop() {
   bool alarm =
       amplitudeOK &&
       hrValid &&
-      (heartRate < LOW_HR || heartRate > HIGH_HR);
+      (heartRate < lowHr || heartRate > highHr);
 
   if (alarm && !buzzerOn) {
     tone(BUZZER_PIN, BUZZER_HZ);
@@ -558,10 +565,10 @@ void updateLcd() {
   else if (!amplitudeOK || !hrValid) {
     status = "NO PULSE";
   }
-  else if (heartRate < LOW_HR) {
+  else if (heartRate < lowHr) {
     status = "LOW";
   }
-  else if (heartRate > HIGH_HR) {
+  else if (heartRate > highHr) {
     status = "HIGH";
   }
   else {
@@ -615,9 +622,8 @@ void bufferBluetoothSample(uint16_t raw) {
   }
 
   capturePacket.sequence = nextSequence++;
-  capturePacket.valid = (amplitudeOK && hrValid) ? 1 : 0;
   capturePacket.hr =
-      capturePacket.valid ? heartRate : 0.0f;
+      (amplitudeOK && hrValid) ? heartRate : 0.0f;
   capturePacket.recording = recording ? 1 : 0;
 
   // Queue copies the packet, so the capture buffer
@@ -633,15 +639,61 @@ void bufferBluetoothSample(uint16_t raw) {
 // BACKGROUND BLUETOOTH SENDER
 // ======================================================
 
+void serviceBluetoothCommands() {
+  // Reads any bytes the host has sent and applies a valid
+  // "$LIM,LLL,UUU*CC" command to the HR alarm limits. Never blocks.
+  // Corrupted, over-long or out-of-range commands are ignored; the host
+  // sees that the echoed limits did not change and re-sends.
+  static char cmdBuf[24];
+  static uint8_t cmdLen = 0;
+  static bool cmdOverflow = false;
+
+  int budget = 64;   // bytes per call keeps each pass short
+
+  while (budget-- > 0 && SerialBT.available()) {
+    int c = SerialBT.read();
+
+    if (c < 0) {
+      break;
+    }
+
+    if (c == '\n') {
+      uint16_t low, high;
+
+      if (!cmdOverflow &&
+          parseLimitsCommand(cmdBuf, cmdLen, &low, &high)) {
+        lowHr = low;
+        highHr = high;
+
+        Serial.printf("[BT] HR limits set to %u-%u BPM\n",
+                      (unsigned)low, (unsigned)high);
+      }
+
+      cmdLen = 0;
+      cmdOverflow = false;
+    }
+    else if (cmdLen < sizeof(cmdBuf)) {
+      cmdBuf[cmdLen++] = (char)c;
+    }
+    else {
+      cmdOverflow = true;   // too long to be a command; wait for newline
+    }
+  }
+}
+
 void bluetoothSender(void* parameter) {
+  // This task owns all Bluetooth reads and writes.
   BtPacket packet;
-  char frame[PACKET_BYTES + 1];
+  char frame[PACKET_BUF_SIZE];
 
   for (;;) {
+    serviceBluetoothCommands();
+
+    // Wake at least every 20 ms to poll for host commands.
     if (xQueueReceive(
           btQueue,
           &packet,
-          portMAX_DELAY
+          pdMS_TO_TICKS(20)
         ) != pdTRUE) {
       continue;
     }
@@ -650,42 +702,18 @@ void bluetoothSender(void* parameter) {
       continue;
     }
 
-    // Fixed-width header: 25 characters.
-    int used = snprintf(
+    size_t len = buildPacket(
       frame,
       sizeof(frame),
-      "LP,%010lu,%06.1f,%u,%u,",
-      (unsigned long)packet.sequence,
+      (uint16_t)(packet.sequence & 0xFFFF),
       packet.hr,
-      (unsigned)packet.recording,
-      (unsigned)packet.valid
+      packet.recording != 0,
+      lowHr,
+      highHr,
+      packet.raw
     );
 
-    if (used != 25) {
-      continue;
-    }
-
-    bool formatOK = true;
-
-    // Each sample occupies 4 digits plus a separator.
-    for (uint16_t i = 0; i < PACKET_SAMPLES; i++) {
-      int written = snprintf(
-        frame + used,
-        sizeof(frame) - used,
-        "%04u%c",
-        (unsigned)packet.raw[i],
-        i == PACKET_SAMPLES - 1 ? '\n' : ','
-      );
-
-      if (written != 5) {
-        formatOK = false;
-        break;
-      }
-
-      used += written;
-    }
-
-    if (!formatOK || used != (int)PACKET_BYTES) {
+    if (len != PACKET_LEN) {
       continue;
     }
 
@@ -693,10 +721,10 @@ void bluetoothSender(void* parameter) {
     // outside the sensor-sampling loop.
     size_t sent = SerialBT.write(
       (const uint8_t*)frame,
-      PACKET_BYTES
+      PACKET_LEN
     );
 
-    if (sent != PACKET_BYTES) {
+    if (sent != PACKET_LEN) {
       // Terminate a partial line so the host can
       // reject it and find the next complete packet.
       if (SerialBT.hasClient()) {
