@@ -5,7 +5,7 @@ Wearable PPG pulse monitor: ESP32 + PPG sensor → Bluetooth SPP → Python host
 ## Folders
 | Folder | Contents |
 | --- | --- |
-| `A2_Lumi/` | **Final LumiPulse sketch** (`A2_Lumi.ino` + `switch`/`packet` files): local monitor, button (3 s hold toggles buzzer sound), LEDs, LCD, Bluetooth packets (`AbiESP32`) and host alarm messages |
+| `A2_Lumi/` | **Final LumiPulse sketch** (`A2_Lumi.ino` + `switch`/`packet` files): local monitor, button (3 s hold toggles buzzer sound), LEDs, LCD, Bluetooth packets (`AbiESP32`) |
 | `esp32/pulse_monitor/` | **Main ESP32 sketch**: Abi's acquisition, MCU HR, button, LEDs, buzzer, LCD + Bluetooth packets (`LumiPulse-G01`). Set `USE_REAL_SENSOR 0` to replay pulse.csv without the sensor |
 | `esp32/bt_packet_sender/` | Standalone Bluetooth test sketch: 50 Hz sampling, 1 packet/s over Bluetooth (open `bt_packet_sender.ino` in the Arduino IDE) |
 | `host/` | Python host: `comms.py` (Bluetooth receiver), `ppg_dsp.py` (filtering + heart rate), `packet_format.py`, `packet_sim.py` (fake ESP32), tests |
