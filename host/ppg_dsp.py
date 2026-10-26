@@ -67,8 +67,10 @@ FFT_WINDOW_S = 8.0       # FFT analysis window (8 s -> 0.125 Hz bins before zero
 FFT_NFFT = 2048          # zero-padded length (0.024 Hz / 1.5 BPM interpolation)
 
 FLAT_P2P_COUNTS = 20     # filtered peak-to-peak below this = no finger / no pulse
-SATURATION_MARGIN = 5    # samples within this many counts of 0 or 4095 are clipped
-SATURATION_FRAC = 0.05   # more than 5 % clipped samples = saturated
+SATURATION_MARGIN = 1    # samples within this many counts of 0 or 4095 are clipped
+SATURATION_FRAC = 0.20   # more than 20 % clipped samples = saturated
+                         # (was 5 counts / 5 %: flagged real signals as saturated;
+                         #  a genuinely railed sensor sits at the limit for far longer)
 HR_AGREE_BPM = 12.0      # peak HR and FFT HR must agree within this
 MIN_SPECTRAL_PURITY = 0.40  # fraction of band power near the dominant peak
                             # (tested: real pulses >= 0.47, band-limited noise ~0.27)
