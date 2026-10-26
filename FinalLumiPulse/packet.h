@@ -11,6 +11,11 @@
 **   sNN    50 raw ADC samples, 0000-4095, oldest first
 **   CC     XOR of every byte between '$' and '*', 2 upper-case hex digits
 **
+** Host -> ESP32 alarm message (ASCII, 10 bytes): $ALM,s*CC\n
+**
+**   s   0 normal, 1 low, 2 high, 3 none (no valid HR / no data)
+**   CC  XOR of the bytes between '$' and '*', as above
+**
 ** Must match Code/host/packet_format.py - change both together.
 **
 ** Author: Bianca Dibden
@@ -29,6 +34,15 @@
 
 size_t buildPacket(char *out, size_t outSize, uint16_t seq, float heartRate,
                    bool recording, const uint16_t *samples);
+
+#define ALARM_NORMAL 0
+#define ALARM_LOW 1
+#define ALARM_HIGH 2
+#define ALARM_NONE 3
+
+// Validates one received line (without the newline); true and *state set if
+// it is a well-formed alarm message with a correct checksum.
+bool parseAlarm(const char *line, size_t len, uint8_t *state);
 
 uint8_t packetChecksum(const char *payload, size_t len);
 

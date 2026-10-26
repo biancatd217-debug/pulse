@@ -111,6 +111,7 @@ class SimulatedDevice:
         self.t_on = time.monotonic()
         self.generation = 0      # increments on power-off/reset; kills open connections
         self.packets_built = 0
+        self.received = []       # byte strings written by the host (alarm messages)
         self.held = None         # packet held back to simulate out-of-order delivery
 
     # --- controls used by tests --------------------------------------------
@@ -281,6 +282,20 @@ class SimulatedSerial:
     def reset_input_buffer(self):
         """Discard buffered input. Author: Bianca Dibden"""
         self.buf.clear()
+
+    def write(self, data):
+        """
+        Accept bytes from the host (e.g. alarm messages) and record them in
+        the device's `received` list.
+
+        Author: Bianca Dibden
+        """
+        if not self.is_open:
+            raise SerialException("port is closed")
+        if not self._alive() and self.dev.loss_mode == "error":
+            raise SerialException("device disconnected")
+        self.dev.received.append(bytes(data))
+        return len(data)
 
     def close(self):
         """Close the connection. Author: Bianca Dibden"""

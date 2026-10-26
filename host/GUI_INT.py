@@ -1872,6 +1872,8 @@ def main():
         )
         if session_summary is not None:
             session_summary.alarm(new_alarm_state)
+        # Show the same alarm on the ESP32's LCD/buzzer.
+        link.set_alarm(new_alarm_state)
         if new_alarm_state != hr_alarm_state:
             if new_alarm_state == "low":
                 add_log(window, "Pulse Low")
@@ -2071,6 +2073,7 @@ def main():
         update_communication_display(window, communication, link)
         if link.no_data_alarm:
             window["-AMPLITUDE-"].update("--")
+            link.set_alarm("invalid")
 
         # ----------------------------------------------------
         # SESSION TIMER

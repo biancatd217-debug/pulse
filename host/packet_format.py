@@ -46,6 +46,16 @@ SEQ_MODULO = 65536
 ADC_MAX = 4095
 HR_MAX = 999.9
 
+
+# Host -> ESP32 alarm message states (see build_alarm). Must match packet.h.
+ALARM_NORMAL = 0
+ALARM_LOW = 1
+ALARM_HIGH = 2
+ALARM_NONE = 3     # no valid HR / no data: ESP32 shows no alarm
+ALARM_LEN = 10   # "$ALM,s*CC\n"
+ALARM_STATES = {"normal": ALARM_NORMAL, "low": ALARM_LOW, "high": ALARM_HIGH,
+                "invalid": ALARM_NONE}
+
 # 1 ($) + 6 (SSSSS,) + 6 (HHH.H,) + 2 (R,) + 50*4 + 49 commas + 1 (*) + 2 (CC) + 1 (\n)
 PACKET_LEN = 1 + 6 + 6 + 2 + SAMPLES_PER_PACKET * 4 + (SAMPLES_PER_PACKET - 1) + 1 + 2 + 1
 assert PACKET_LEN == 268
@@ -136,6 +146,23 @@ def build_packet(seq: int, mcu_hr: float, recording: bool, samples) -> bytes:
     pkt = START + payload + CHECKSUM_SEP + f"{checksum(payload):02X}".encode("ascii") + END
     assert len(pkt) == PACKET_LEN
     return pkt
+
+
+def build_alarm(state: int) -> bytes:
+    """
+    Build the host -> ESP32 alarm message "$ALM,<s>*CC\\n" (10 bytes).
+
+    Parameters
+    ----------
+    state : int
+        ALARM_NORMAL, ALARM_LOW, ALARM_HIGH or ALARM_NONE.
+
+    Author: Bianca Dibden
+    """
+    if state not in (ALARM_NORMAL, ALARM_LOW, ALARM_HIGH, ALARM_NONE):
+        raise ValueError(f"bad alarm state {state!r}")
+    payload = f"ALM,{state}".encode("ascii")
+    return START + payload + CHECKSUM_SEP + f"{checksum(payload):02X}".encode("ascii") + END
 
 
 def parse_packet(line: bytes) -> Packet:

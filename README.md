@@ -25,4 +25,10 @@ On Mac/Linux use `python3` instead of `py`.
 `$SSSSS,HHH.H,R,s01,...,s50*CC\n` — sequence number, MCU pulse rate (BPM), recording state,
 50 raw ADC samples, XOR checksum. See `host/packet_format.py` and `esp32/bt_packet_sender/packet.h`.
 
+## Alarm message (host → ESP32, repeated every 1 s)
+`$ALM,s*CC\n` (10 bytes) — `s` is 0 normal, 1 low, 2 high, 3 none (no valid HR / no data), then the
+same XOR checksum. The host works the state out from the limits set in the GUI; `FinalLumiPulse`
+shows it on the LCD and sounds the buzzer. If no valid message arrives for 3 s the ESP32 falls back
+to its own 50–100 BPM limits. See `host/packet_format.py` (`build_alarm`) and `FinalLumiPulse/packet.h`.
+
 Authors: Bianca Dibden (comms + signal processing), Abi, Alva

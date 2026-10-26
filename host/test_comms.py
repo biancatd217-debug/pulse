@@ -300,6 +300,55 @@ def test_recording_flag():
           recs[-1].recording and any("Recording started" in e for e in evs))
 
 
+def test_alarm_to_esp32():
+    """
+    Test 8: HR alarm state sent back to the ESP32.
+
+    Author: Bianca Dibden
+    """
+    print("\nTest 8 - alarm sent to the ESP32")
+    check("alarm message format", pf.build_alarm(pf.ALARM_LOW) == b"$ALM,1*5D\n"
+          and all(len(pf.build_alarm(a)) == pf.ALARM_LEN for a in range(4)))
+
+    dev = SimulatedDevice(period=0.1)
+    link = PPGLink("SIM", serial_factory=dev.open, **FAST)
+    recs, evs = [], []
+    link.start()
+    wait_for(link, lambda: len(recs) >= 2, 2, recs, evs)
+    check("'invalid' (no alarm) is sent after connecting",
+          pf.build_alarm(pf.ALARM_NONE) in dev.received)
+    link.set_alarm("high")
+    wait_for(link, lambda: pf.build_alarm(pf.ALARM_HIGH) in dev.received, 1, recs, evs)
+    check("a change is sent at once", pf.build_alarm(pf.ALARM_HIGH) in dev.received)
+    n = dev.received.count(pf.build_alarm(pf.ALARM_HIGH))
+    time.sleep(1.3)
+    check("the state is repeated while unchanged", dev.received.count(pf.build_alarm(pf.ALARM_HIGH)) > n)
+    link.set_alarm("normal")
+    wait_for(link, lambda: pf.build_alarm(pf.ALARM_NORMAL) in dev.received, 1, recs, evs)
+    check("normal state is sent", pf.build_alarm(pf.ALARM_NORMAL) in dev.received)
+    link.stop()
+
+    cxx = shutil.which("g++") or shutil.which("clang++")
+    src = os.path.join(HERE, "..", "FinalLumiPulse")
+    if not cxx:
+        print("  [SKIP] C++ compiler not found - ESP32 parseAlarm cross-check skipped")
+        return
+    msgs = [pf.build_alarm(a)[:-1] for a in range(4)]
+    msgs += [b"$ALM,1*5E", b"$ALM,4*" + b"00", b"$ALM,1*5D2", b"ALM,1*5D", b"$ALX,1*5D", b"$ALM,1*ZZ"]
+    with tempfile.TemporaryDirectory() as tmp:
+        main = os.path.join(tmp, "main.cpp")
+        exe = os.path.join(tmp, "pa")
+        with open(main, "w") as f:
+            f.write('#include <stdio.h>\n#include <string.h>\n#include "packet.h"\n'
+                    'int main(){char l[64];while(fgets(l,sizeof l,stdin)){size_t n=strcspn(l,"\\n");uint8_t s=9;'
+                    'printf("%d\\n",parseAlarm(l,n,&s)?s:-1);}return 0;}')
+        subprocess.run([cxx, "-o", exe, main, os.path.join(src, "packet.cpp"), "-I", src], check=True)
+        out = subprocess.run([exe], input=b"\n".join(msgs) + b"\n", capture_output=True, check=True).stdout
+    got = [int(x) for x in out.split()]
+    check("ESP32 parseAlarm accepts good messages and rejects bad ones",
+          got == [0, 1, 2, 3] + [-1] * 6, str(got))
+
+
 if __name__ == "__main__":
     test_packet_format()
     test_sequence_tracker()
@@ -308,6 +357,7 @@ if __name__ == "__main__":
     test_loss_and_recovery("silent")
     test_loss_and_recovery("error")
     test_recording_flag()
+    test_alarm_to_esp32()
     if "--quick" not in sys.argv:
         test_real_timing()
     print(f"\n{sum(RESULTS)}/{len(RESULTS)} checks passed.")

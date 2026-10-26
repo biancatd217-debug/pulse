@@ -11,6 +11,8 @@ PPGLink runs in a background thread and:
   - on loss of comms keeps retrying to reconnect and resumes automatically
     when the ESP32 comes back (Reqts 16, 17),
   - passes each valid packet through the signal processing in ppg_dsp.py,
+  - sends the current HR alarm state (low/high/normal) to the ESP32
+    (set_alarm), repeated once a second, so its LCD and buzzer match the GUI,
   - hands the GUI one HostRecord per packet plus timestamped log events in
     the required "<time.ctime()>: <message>" format (Reqt 13).
 
@@ -23,6 +25,7 @@ event loop (e.g. after each window.read(timeout=100)).
     for rec in link.get_records():  ...  # plot rec.raw / rec.filtered, show rec.host_hr
     for line in link.get_events():  ...  # append to the system log window
     link.no_data_alarm                  # True while no packet for >= 5 s
+    link.set_alarm("low")               # 'low', 'high', 'normal' or 'invalid'
     link.status                         # 'Connected' / 'Connecting' / 'Disconnected'
     ...
     link.stop()
@@ -61,6 +64,7 @@ except ImportError:  # allows the simulator/tests to run without pyserial
 BAUD = 115200
 READ_TIMEOUT_S = 0.1      # serial read timeout; keeps the thread responsive
 RETRY_INTERVAL_S = 1.0    # wait between reconnection attempts (Reqt 17: < 10 s)
+ALARM_RESEND_S = 1.0      # repeat the alarm message to the ESP32 this often
 RECONNECT_AFTER_S = 4.0   # no bytes at all for this long on an open port -> close and reopen
 ALARM_AFTER_S = 5.0       # no-packet alarm threshold (Reqt 14)
 OUT_OF_ORDER_WINDOW = 5   # a seq up to this far behind = late packet; further = MCU restart
@@ -244,6 +248,10 @@ class PPGLink:
         self._valid_since_connect = 0
         self._attempts = 0
 
+        # HR alarm state to show on the ESP32 (written only by the link thread).
+        self._alarm_state = pf.ALARM_NONE
+        self._alarm_tx_time = 0.0
+
     # ----------------------------------------------------------------- public
     def start(self):
         """
@@ -294,6 +302,26 @@ class PPGLink:
         Author: Bianca Dibden
         """
         return self._drain(self._events)
+
+    def set_alarm(self, state):
+        """
+        Set the HR alarm state the ESP32 should display. Non-blocking: the
+        link thread sends it at once and repeats it every ALARM_RESEND_S, so a
+        reconnection or ESP32 reset picks it up again. The ESP32 falls back to
+        its own limits if the messages stop.
+
+        Parameters
+        ----------
+        state : str
+            'low', 'high', 'normal' or 'invalid' (no valid HR; no alarm).
+            Unknown values are treated as 'invalid'.
+
+        Author: Bianca Dibden
+        """
+        new = pf.ALARM_STATES.get(state, pf.ALARM_NONE)
+        if new != self._alarm_state:
+            self._alarm_state = new
+            self._alarm_tx_time = 0.0      # send immediately
 
     @property
     def seconds_since_packet(self):
@@ -346,6 +374,7 @@ class PPGLink:
                     self._stop.wait(self.retry_interval)
                     continue
             self._read_once()
+            self._send_alarm()
             self._check_alarm()
             self._check_silence()
 
@@ -380,6 +409,7 @@ class PPGLink:
         self._connected_at = time.monotonic()
         self._last_rx = self._connected_at
         self._valid_since_connect = 0
+        self._alarm_tx_time = 0.0          # tell the ESP32 the alarm state at once
         self.status = STATUS_CONNECTED
         self.stats["connects"] += 1
         what = "Connected" if self.stats["connects"] == 1 else "Reconnected"
@@ -500,6 +530,24 @@ class PPGLink:
         if self.no_data_alarm:
             self.no_data_alarm = False
             self._log("Data resumed - no-data alarm cleared")
+
+    def _send_alarm(self):
+        """
+        Write the alarm message if the state changed or ALARM_RESEND_S has
+        passed. Runs in the link thread, the only place the port is written.
+
+        Author: Bianca Dibden
+        """
+        if self._ser is None:
+            return
+        now = time.monotonic()
+        if now - self._alarm_tx_time < ALARM_RESEND_S:
+            return
+        self._alarm_tx_time = now
+        try:
+            self._ser.write(pf.build_alarm(self._alarm_state))
+        except (SerialException, OSError) as e:
+            self._lost(short_error(e))
 
     def _check_alarm(self):
         """

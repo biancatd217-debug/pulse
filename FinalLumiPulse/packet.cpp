@@ -8,6 +8,8 @@
 
 #include "packet.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 uint8_t packetChecksum(const char *payload, size_t len)
 /*
@@ -60,4 +62,31 @@ size_t buildPacket(char *out, size_t outSize, uint16_t seq, float heartRate,
   uint8_t cs = packetChecksum(out + 1, pos - 1);   // skip the '$'
   pos += snprintf(out + pos, outSize - pos, "*%02X\n", cs);
   return (size_t)pos;
+}
+
+bool parseAlarm(const char *line, size_t len, uint8_t *state)
+/*
+** Checks a line of the form "$ALM,s*CC" (newline already removed).
+**
+** line  - received characters
+** len   - number of characters
+** state - set to 0-3 on success
+**
+** returns - true if the format and checksum are correct.
+**
+** Author: Bianca Dibden
+*/
+{
+  if (len != 9 || line[0] != '$' || line[6] != '*') return false;
+  if (memcmp(line + 1, "ALM,", 4) != 0) return false;
+  if (line[5] < '0' || line[5] > '3') return false;
+
+  char hex[3] = {line[7], line[8], '\0'};
+  char *end = nullptr;
+  long cs = strtol(hex, &end, 16);
+  if (*end != '\0' || end == hex) return false;
+  if ((uint8_t)cs != packetChecksum(line + 1, 5)) return false;
+
+  *state = (uint8_t)(line[5] - '0');
+  return true;
 }

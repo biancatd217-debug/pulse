@@ -47,6 +47,8 @@
 #define BUZZER_PIN 16 // just turned off, change back to 27 if want on
 #define DEBOUNCE_CNT 5
 
+
+
 LiquidCrystal lcd(23, 22, 21, 19, 18, 25);
 Switch switch1(1, DEBOUNCE_CNT);
 
@@ -59,6 +61,9 @@ const float HIGH_HR_LIMIT = 100.0f;
 const uint32_t HOLD_MS = 3000UL;
 const uint32_t FLASH_MS = 100UL;
 const uint32_t LCD_MS = 250UL;
+// The host repeats its alarm message every 1 s; after this long without one
+// the monitor uses its own limits again.
+const uint32_t HOST_ALARM_TIMEOUT_MS = 3000UL;
 const uint16_t BUZZER_HZ = 2000;
 
 // Detection limits are wider than alarm limits: 20-240 BPM.
@@ -89,6 +94,13 @@ QueueHandle_t btQueue = nullptr;
 BtPacket capturePacket = {};
 uint16_t packetCount = 0;
 uint32_t nextSequence = 0;
+
+// ---------------- HOST ALARM DATA ----------------
+char alarmLine[16];
+uint8_t alarmLineLen = 0;
+uint8_t hostAlarm = ALARM_NONE;
+bool haveHostAlarm = false;
+uint32_t lastHostAlarmTime = 0;
 
 // ---------------- SCHEDULER AND BUTTON DATA ----------------
 uint32_t lastTickTime = 0;
@@ -133,6 +145,8 @@ void updateThresholds();
 void resetBeats();
 void detectBeat(float filtered, bool thresholdsChanged, uint32_t now);
 void updateAlarm();
+void readHostAlarm(uint32_t now);
+uint8_t currentAlarm(uint32_t now);
 void writeRow(uint8_t row, const char* text);
 void updateLcd();
 void bufferBluetoothSample(uint16_t raw);
@@ -211,6 +225,9 @@ void loop() {
   }
   uint32_t now = millis();
 
+  // 0. Pick up any alarm state sent back by the host.
+  readHostAlarm(now);
+
   // 1. Sample/debounce button and update blue recording LED.
   updateButton(now);
   digitalWrite(BLUE_LED_PIN, recording ? HIGH : LOW);
@@ -281,8 +298,7 @@ void updateButton(uint32_t now) {
   if (pressed && switch1.state() && !holdUsed &&
       now - pressStart >= HOLD_MS) {
     holdUsed = true;
-    if (signalValid && hrValid &&
-        (heartRate < LOW_HR_LIMIT || heartRate > HIGH_HR_LIMIT)) {
+    if (currentAlarm(now) == ALARM_LOW || currentAlarm(now) == ALARM_HIGH) {
       alarmMuted = true;
     }
   }
@@ -382,11 +398,48 @@ void detectBeat(float filtered, bool thresholdsChanged, uint32_t now) {
   previousFiltered = filtered;
 }
 
+void readHostAlarm(uint32_t now) {
+  // Bounded work per tick so the 20 ms sampling loop is never held up.
+  for (int i = 0; i < 32 && bluetoothReady && SerialBT.available(); i++) {
+    char c = (char)SerialBT.read();
+    if (c == '$') {
+      alarmLineLen = 0;  // a new message always starts here
+    }
+    if (c == '\n') {
+      uint8_t state;
+      if (parseAlarm(alarmLine, alarmLineLen, &state)) {
+        hostAlarm = state;
+        haveHostAlarm = true;
+        lastHostAlarmTime = now;
+      }
+      alarmLineLen = 0;
+    }
+    else if (alarmLineLen < sizeof(alarmLine)) {
+      alarmLine[alarmLineLen++] = c;
+    }
+    else {
+      alarmLineLen = 0;  // too long to be ours; wait for the next '$'
+    }
+  }
+}
+
+// ALARM_LOW, ALARM_HIGH or ALARM_NONE. The host's alarm (which uses the
+// limits set in the GUI) wins while it is fresh; otherwise use our own limits.
+uint8_t currentAlarm(uint32_t now) {
+  if (haveHostAlarm && now - lastHostAlarmTime < HOST_ALARM_TIMEOUT_MS) {
+    return (hostAlarm == ALARM_LOW || hostAlarm == ALARM_HIGH) ? hostAlarm
+                                                               : ALARM_NONE;
+  }
+  if (!(signalValid && hrValid)) return ALARM_NONE;
+  if (heartRate < LOW_HR_LIMIT) return ALARM_LOW;
+  if (heartRate > HIGH_HR_LIMIT) return ALARM_HIGH;
+  return ALARM_NONE;
+}
+
 void updateAlarm() {
-  bool valid = signalValid && hrValid;
-  bool outsideLimits = heartRate < LOW_HR_LIMIT || heartRate > HIGH_HR_LIMIT;
-  if (valid && !outsideLimits) alarmMuted = false;
-  bool sound = valid && outsideLimits && !alarmMuted;
+  uint8_t alarm = currentAlarm(millis());
+  if (alarm == ALARM_NONE) alarmMuted = false;
+  bool sound = alarm != ALARM_NONE && !alarmMuted;
   if (sound && !buzzerOn) {
     tone(BUZZER_PIN, BUZZER_HZ);
     buzzerOn = true;
@@ -415,13 +468,15 @@ void writeRow(uint8_t row, const char* text) {
 
 void updateLcd() {
   char row[17];
+  uint8_t alarm = currentAlarm(millis());
+  const char* status = alarm == ALARM_LOW ? "LOW" :
+                       alarm == ALARM_HIGH ? "HIGH" : "";
   if (signalValid && hrValid) {
-    const char* status = heartRate < LOW_HR_LIMIT ? "LOW" :
-                         heartRate > HIGH_HR_LIMIT ? "HIGH" : "";
     snprintf(row, sizeof(row), "HR:%5.1fBPM %s", heartRate, status);
   }
   else {
-    snprintf(row, sizeof(row), "HR:%s", haveThreshold ? "NO PULSE" : "WAIT");
+    snprintf(row, sizeof(row), "HR:%s %s", haveThreshold ? "NO PULSE" : "WAIT",
+             status);
   }
   writeRow(0, row);
   writeRow(1, !bluetoothReady ? "BLUETOOTH: ERROR" :
