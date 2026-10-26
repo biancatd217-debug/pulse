@@ -80,7 +80,6 @@ SAMPLE_RATE = 50
 SAMPLE_PERIOD = 1 / SAMPLE_RATE
 
 # PPG shows the most recent 10 seconds.
-
 PPG_DISPLAY_SECONDS = 10
 PPG_BUFFER_SIZE = SAMPLE_RATE * PPG_DISPLAY_SECONDS
 
@@ -95,7 +94,7 @@ HR_UPDATE_PERIOD = 1.0
 HR_TREND_SECONDS = 60
 
 # Default HR limits. User can override these.
-LOW_HR_LIMIT = 60
+LOW_HR_LIMIT = 50
 HIGH_HR_LIMIT = 100
 
 # Communication alarm (5 s, Reqt 14) is timed in comms.py (ALARM_AFTER_S).
@@ -285,13 +284,13 @@ def create_researcher_plots(window):
         if name == 'spectrogram':
             # Fixed display cells for the unchanged 200-sample / 25-hop STFT.
             # Right-align partial histories instead of resizing the image/extent.
-            # Use the existing STFT centres + 10 s: 2.01..8.01 s at full
-            # history. Half-hop cell edges are 1.76..8.26 s. Show that valid
-            # centre-time domain without stretching estimates to 0..10 s or
+            # Use the existing STFT centres: -7.99..-1.99 s at full
+            # history. Half-hop cell edges are -8.24..-1.74 s. Show that valid
+            # centre-time domain without stretching estimates to -10..0 s or
             # inventing boundary columns. Partial histories remain NaN-padded.
             ax.set_position([.16, .24, .60, .61])
             artist = ax.imshow(np.full((21, 13), np.nan), origin='lower', aspect='auto',
-                               extent=(1.76, 8.26, -.125, 5.125),
+                               extent=(-8.24, -1.74, -.125, 5.125),
                                vmin=-40, vmax=60, cmap='cividis', interpolation='nearest')
             artist.set_visible(False)
             # Explicit colourbar axes avoid automatic parent-axes repositioning.
@@ -299,11 +298,11 @@ def create_researcher_plots(window):
             bar = fig.colorbar(artist, cax=colourbar_axes)
             bar.set_label('Magnitude (dB re 1 ADC count)', color=TEXT_MUTED, fontsize=7)
             bar.ax.tick_params(colors=TEXT_MUTED, labelsize=7)
-            ax.set_xlim(1.76, 8.26)
+            ax.set_xlim(-10, 0)
             ax.set_ylim(0, 5)
         else:
             artist, = ax.plot([], [], color=ACCENT, linewidth=1)
-            ax.set_xlim((0, 5) if name == 'fft' else (0, 10))
+            ax.set_xlim((0, 5) if name == 'fft' else (-10, 0))
             ax.grid(True, alpha=.2)
         waiting = ax.text(.5, .5, 'Acquiring continuous data', transform=ax.transAxes,
                           ha='center', color=TEXT_MUTED, fontsize=9)
@@ -341,9 +340,9 @@ def update_researcher_plots(plots, analysis):
         acceleration = np.gradient(np.gradient(x, SAMPLE_PERIOD, edge_order=2),
                                    SAMPLE_PERIOD, edge_order=2)
         acceleration[:2] = acceleration[-2:] = np.nan
-        # Display coordinates only: newest sample at 10 s, older samples
+        # Display coordinates only: newest sample at 0 s, older samples
         # step left by 20 ms; the fixed axis never moves.
-        line.set_data(10 + (np.arange(len(x)) - len(x) + 1) * SAMPLE_PERIOD,
+        line.set_data((np.arange(len(x)) - len(x) + 1) * SAMPLE_PERIOD,
                       acceleration)
         autoscale_y(ax, acceleration)
     else:
@@ -1725,7 +1724,7 @@ def main():
         figsize=(7.0, 2.25)
     )
 
-    ppg_time = np.linspace(0, PPG_DISPLAY_SECONDS, PPG_BUFFER_SIZE)
+    ppg_time = np.linspace(-PPG_DISPLAY_SECONDS, 0, PPG_BUFFER_SIZE)
 
     # NaN until real samples arrive, so no flat line is drawn at zero.
     raw_ppg_buffer = np.full(PPG_BUFFER_SIZE, np.nan)
@@ -1743,7 +1742,7 @@ def main():
 
     ppg_ax.set_xlabel("Time (s)", labelpad=3)
     ppg_ax.set_ylabel("Amplitude (ADC counts)", labelpad=3)
-    ppg_ax.set_xlim(0, PPG_DISPLAY_SECONDS)
+    ppg_ax.set_xlim(-PPG_DISPLAY_SECONDS, 0)
     ppg_ax.set_ylim(0, 4095)
     ppg_ax.grid(True, alpha=0.2)
     style_legend(ppg_ax, [raw_ppg_line], compact=True)
@@ -1770,7 +1769,7 @@ def main():
 
     hr_ax.set_xlabel("Time (s)", labelpad=3)
     hr_ax.set_ylabel("Heart Rate (BPM)", labelpad=3)
-    hr_ax.set_xlim(0, HR_TREND_SECONDS)
+    hr_ax.set_xlim(-HR_TREND_SECONDS, 0)
     hr_ax.set_ylim(40, 200)
     hr_ax.grid(True, alpha=0.2)
     hr_fig.subplots_adjust(left=0.11, right=0.98, bottom=0.22, top=0.96)
@@ -1789,7 +1788,7 @@ def main():
                                 linestyle="--", label="MCU HR")
     cmp_ax.set_xlabel("Time (s)", labelpad=3)
     cmp_ax.set_ylabel("Heart Rate (BPM)", labelpad=3)
-    cmp_ax.set_xlim(0, HR_TREND_SECONDS)
+    cmp_ax.set_xlim(-HR_TREND_SECONDS, 0)
     cmp_ax.set_ylim(40, 200)
     cmp_ax.grid(True, alpha=0.2)
     style_legend(cmp_ax, [cmp_host_line, cmp_mcu_line])
@@ -2021,10 +2020,7 @@ def main():
                 hr_values.pop(0)
                 mcu_hr_values.pop(0)
 
-            if elapsed_time <= HR_TREND_SECONDS:
-                display_hr_times = np.array(hr_times)
-            else:
-                display_hr_times = np.array(hr_times) - (elapsed_time - HR_TREND_SECONDS)
+            display_hr_times = np.array(hr_times) - elapsed_time
 
             hr_line.set_data(display_hr_times, hr_values)
             hr_fig_agg.draw()
