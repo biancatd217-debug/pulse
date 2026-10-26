@@ -11,6 +11,11 @@
 **   sNN    50 raw ADC samples, 0000-4095, oldest first
 **   CC     XOR of every byte between '$' and '*', 2 upper-case hex digits
 **
+** Host -> ESP32 alarm limits message (ASCII, 20 bytes): $LIM,LLL.L,HHH.H*CC\n
+**
+**   LLL.L  low HR limit in BPM, HHH.H high HR limit in BPM (1 d.p.)
+**   CC     XOR of the bytes between '$' and '*', as above
+**
 ** Must match Code/host/packet_format.py - change both together.
 **
 ** Author: Bianca Dibden
@@ -29,6 +34,11 @@
 
 size_t buildPacket(char *out, size_t outSize, uint16_t seq, float heartRate,
                    bool recording, const uint16_t *samples);
+
+// Validates one received line (without the newline); true and *low / *high
+// set if it is a well-formed limits message with a correct checksum and
+// 0 <= low < high <= 999.9.
+bool parseLimits(const char *line, size_t len, float *low, float *high);
 
 uint8_t packetChecksum(const char *payload, size_t len);
 

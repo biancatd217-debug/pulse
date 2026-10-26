@@ -11,6 +11,8 @@ PPGLink runs in a background thread and:
   - on loss of comms keeps retrying to reconnect and resumes automatically
     when the ESP32 comes back (Reqts 16, 17),
   - passes each valid packet through the signal processing in ppg_dsp.py,
+  - sends the HR alarm limits to the ESP32 (set_limits), repeated once a
+    second, so its alarm/buzzer uses the limits chosen in the GUI,
   - hands the GUI one HostRecord per packet plus timestamped log events in
     the required "<time.ctime()>: <message>" format (Reqt 13).
 
@@ -22,6 +24,7 @@ event loop (e.g. after each window.read(timeout=100)).
     ...
     for rec in link.get_records():  ...  # plot rec.raw / rec.filtered, show rec.host_hr
     for line in link.get_events():  ...  # append to the system log window
+    link.set_limits(60, 100)            # ESP32 alarm limits (BPM)
     link.no_data_alarm                  # True while no packet for >= 5 s
     link.status                         # 'Connected' / 'Connecting' / 'Disconnected'
     ...
@@ -61,6 +64,7 @@ except ImportError:  # allows the simulator/tests to run without pyserial
 BAUD = 115200
 READ_TIMEOUT_S = 0.1      # serial read timeout; keeps the thread responsive
 RETRY_INTERVAL_S = 1.0    # wait between reconnection attempts (Reqt 17: < 10 s)
+LIMITS_RESEND_S = 1.0     # repeat the limits message to the ESP32 this often
 RECONNECT_AFTER_S = 4.0   # no bytes at all for this long on an open port -> close and reopen
 ALARM_AFTER_S = 5.0       # no-packet alarm threshold (Reqt 14)
 OUT_OF_ORDER_WINDOW = 5   # a seq up to this far behind = late packet; further = MCU restart
@@ -244,6 +248,11 @@ class PPGLink:
         self._valid_since_connect = 0
         self._attempts = 0
 
+        # HR alarm limits to send to the ESP32 (None until the GUI sets them).
+        self._limits_msg = None
+        self._limits_tx_time = 0.0
+        self._limits_lock = threading.Lock()
+
     # ----------------------------------------------------------------- public
     def start(self):
         """
@@ -294,6 +303,29 @@ class PPGLink:
         Author: Bianca Dibden
         """
         return self._drain(self._events)
+
+    def set_limits(self, low, high):
+        """
+        Set the HR alarm limits the ESP32 should use. Non-blocking: the link
+        thread sends them at once and repeats them every LIMITS_RESEND_S, so a
+        reconnection or ESP32 reset picks them up again.
+
+        Parameters
+        ----------
+        low, high : float
+            Limits in BPM, 0 <= low < high <= 999.9.
+
+        Raises
+        ------
+        ValueError
+            If the limits are invalid (nothing is sent).
+
+        Author: Bianca Dibden
+        """
+        msg = pf.build_limits(low, high)
+        with self._limits_lock:
+            self._limits_msg = msg
+            self._limits_tx_time = 0.0      # send immediately
 
     @property
     def seconds_since_packet(self):
@@ -346,6 +378,7 @@ class PPGLink:
                     self._stop.wait(self.retry_interval)
                     continue
             self._read_once()
+            self._send_limits()
             self._check_alarm()
             self._check_silence()
 
@@ -399,6 +432,25 @@ class PPGLink:
             except Exception:
                 pass
         self._ser = None
+
+    def _send_limits(self):
+        """
+        Send the limits message if one is set and it is due.
+
+        Author: Bianca Dibden
+        """
+        if self._ser is None:
+            return
+        now = time.monotonic()
+        with self._limits_lock:
+            msg = self._limits_msg
+            if msg is None or now - self._limits_tx_time < LIMITS_RESEND_S:
+                return
+            self._limits_tx_time = now
+        try:
+            self._ser.write(msg)
+        except (SerialException, OSError) as e:
+            self._lost(short_error(e))
 
     def _lost(self, reason):
         """

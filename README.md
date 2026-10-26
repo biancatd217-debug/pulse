@@ -24,6 +24,9 @@ On Mac/Linux use `python3` instead of `py`.
 
 ## Packet format (ESP32 → host, 1 per second, always 268 bytes)
 `$SSSSS,HHH.H,R,s01,...,s50*CC\n` — sequence number, MCU pulse rate (BPM), recording state,
-50 raw ADC samples, XOR checksum. See `host/packet_format.py` and `esp32/bt_packet_sender/packet.h`.
+50 raw ADC samples, XOR checksum. See `host/packet_format.py` and `A2_Lumi/packet.h`.
+
+## Alarm limits (host → ESP32)
+`$LIM,LLL.L,HHH.H*CC\n` — the low/high HR limits set in the GUI (Apply Limits). Sent on connect, on change and once a second; the ESP32 alarm, buzzer and LCD LOW/HIGH use them (defaults 50/100 BPM until received) and the serial monitor prints `LowLimit` and `HighLimit` with each sample.
 
 Authors: Bianca Dibden (comms + signal processing), Abi, Alva

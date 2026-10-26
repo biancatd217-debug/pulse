@@ -14,6 +14,8 @@ hardware against the simulated ESP32 in packet_sim.py.
   6. Real-time timing with the real parameters: alarm at 5 s, reconnection
      within 10 s of the ESP32 returning (Reqt 17), host latency (Reqt 12).
 
+  8. Alarm limits sent to the ESP32 ($LIM message).
+
 Run:  python3 test_comms.py          (about 40 s; add --quick to skip test 6)
 
 Author: Bianca Dibden
@@ -300,6 +302,71 @@ def test_recording_flag():
           recs[-1].recording and any("Recording started" in e for e in evs))
 
 
+def test_limits():
+    """
+    Test 8: HR alarm limits sent host -> ESP32 ($LIM message).
+
+    Author: Bianca Dibden
+    """
+    print("\nTest 8 - alarm limits to the ESP32")
+    msg = pf.build_limits(55, 99.5)
+    check("limits message is 20 bytes and round-trips",
+          msg == b"$LIM,055.0,099.5*" + msg[-3:] and len(msg) == pf.LIMITS_LEN
+          and pf.parse_limits(msg) == (55.0, 99.5), msg.decode().strip())
+    bad = 0
+    for args in ((100, 60), (60, 60), (-1, 100), (50, 1000), (float("nan"), 100)):
+        try:
+            pf.build_limits(*args)
+        except ValueError:
+            bad += 1
+    check("invalid limits are refused", bad == 5)
+    try:
+        pf.parse_limits(msg[:-3] + b"00\n")
+        ok = False
+    except pf.PacketError:
+        ok = True
+    check("corrupted limits message is rejected", ok)
+
+    # Sent by the link, repeated, and re-sent after the ESP32 resets
+    dev = SimulatedDevice(period=0.1)
+    ports = []
+
+    def factory(*a):
+        ports.append(dev.open(*a))
+        return ports[-1]
+    link = PPGLink("SIM", serial_factory=factory, **FAST)
+    recs, evs = [], []
+    link.set_limits(65, 110)
+    link.start()
+    wait_for(link, lambda: ports and ports[0].limits == (65.0, 110.0), 2, recs, evs)
+    check("limits reach the device after connecting", ports[0].limits == (65.0, 110.0))
+    link.set_limits(40, 90)
+    wait_for(link, lambda: ports[0].limits == (40.0, 90.0), 2, recs, evs)
+    check("changed limits reach the device", ports[0].limits == (40.0, 90.0))
+    link.stop()
+
+    # C++ parser accepts what Python builds and rejects corruption
+    cxx = shutil.which("g++") or shutil.which("clang++")
+    src = os.path.join(HERE, "..", "A2_Lumi")
+    if not cxx:
+        print("  [SKIP] C++ compiler not found - ESP32 parseLimits cross-check skipped")
+        return
+    good = pf.build_limits(55, 99.5).rstrip(b"\n").decode()
+    cases = [good, good[:-2] + "00", pf.build_limits(50, 100).rstrip(b"\n").decode(),
+             "$LIM,100.0,060.0*00", good[:-1]]
+    with tempfile.TemporaryDirectory() as tmp:
+        main = os.path.join(tmp, "main.cpp")
+        exe = os.path.join(tmp, "lim")
+        body = "".join(f'{{const char*l="{c}";float a=0,b=0;bool r=parseLimits(l,strlen(l),&a,&b);'
+                       f'printf("%d %.1f %.1f\\n",r,a,b);}}' for c in cases)
+        with open(main, "w") as f:
+            f.write('#include <stdio.h>\n#include <string.h>\n#include "packet.h"\nint main(){' + body + 'return 0;}')
+        subprocess.run([cxx, "-o", exe, main, os.path.join(src, "packet.cpp"), "-I", src], check=True)
+        out = subprocess.run([exe], capture_output=True, check=True).stdout.decode().split("\n")[:-1]
+    check("ESP32 parseLimits agrees with Python",
+          out == ["1 55.0 99.5", "0 0.0 0.0", "1 50.0 100.0", "0 0.0 0.0", "0 0.0 0.0"], str(out))
+
+
 if __name__ == "__main__":
     test_packet_format()
     test_sequence_tracker()
@@ -308,6 +375,7 @@ if __name__ == "__main__":
     test_loss_and_recovery("silent")
     test_loss_and_recovery("error")
     test_recording_flag()
+    test_limits()
     if "--quick" not in sys.argv:
         test_real_timing()
     print(f"\n{sum(RESULTS)}/{len(RESULTS)} checks passed.")

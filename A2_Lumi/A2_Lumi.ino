@@ -15,7 +15,9 @@
 ** is sent. It is built by buildPacket() in packet.cpp, which matches
 ** host/packet_format.py exactly (268 bytes, see packet.h). A separate
 ** FreeRTOS task does the sending so a slow Bluetooth write can never delay
-** the 20 ms sampling loop.
+** the 20 ms sampling loop. The host sends back "$LIM,LLL.L,HHH.H*CC" (the
+** low/high HR limits chosen in the GUI) on change and once a second; these
+** replace the default alarm limits until the next valid message.
 ** LCD row 2 shows the connection state.
 **
 ** Wiring: PPG power -> 3V3, ground -> GND, signal -> GPIO34.
@@ -56,8 +58,8 @@ const uint32_t TICK_20MSEC = 20000UL;
 const float SAMPLE_HZ = 50.0f;
 const float HP_HZ = 0.5f;
 const float LP_HZ = 5.0f;
-const float LOW_HR_LIMIT = 50.0f;
-const float HIGH_HR_LIMIT = 100.0f;
+const float DEFAULT_LOW_HR_LIMIT = 50.0f;
+const float DEFAULT_HIGH_HR_LIMIT = 100.0f;
 const uint32_t HOLD_MS = 3000UL;
 const uint32_t FLASH_MS = 100UL;
 const uint32_t LCD_MS = 250UL;
@@ -96,6 +98,12 @@ QueueHandle_t btQueue = nullptr;
 BtPacket capturePacket = {};
 uint16_t packetCount = 0;
 uint32_t nextSequence = 0;
+
+// ---------------- ALARM LIMITS (set by the host) ----------------
+float lowHrLimit = DEFAULT_LOW_HR_LIMIT;
+float highHrLimit = DEFAULT_HIGH_HR_LIMIT;
+char limitsLine[24];
+uint8_t limitsLineLen = 0;
 
 // ---------------- SCHEDULER AND BUTTON DATA ----------------
 uint32_t lastTickTime = 0;
@@ -142,6 +150,7 @@ void updateThresholds();
 void resetBeats();
 void detectBeat(float filtered, bool thresholdsChanged, uint32_t now);
 void updateAlarm();
+void readHostLimits();
 void writeRow(uint8_t row, const char* text);
 void updateLcd();
 void bufferBluetoothSample(uint16_t raw);
@@ -221,6 +230,9 @@ void loop() {
   }
   uint32_t now = millis();
 
+  // 0. Pick up any alarm limits sent by the host.
+  readHostLimits();
+
   // 1. Sample/debounce button and update blue recording LED.
   updateButton(now);
   digitalWrite(BLUE_LED_PIN, recording ? HIGH : LOW);
@@ -271,14 +283,16 @@ void loop() {
   // to show the actual detection level. RawPPG stays completely raw.
   if (hrValid) {
     Serial.printf(
-      "RawPPG:%u\tFiltered:%.1f\tAdaptiveThreshold:%.1f\tHR:%.1f\n",
-      raw, filtered, adaptiveThreshold, heartRate
+      "RawPPG:%u\tFiltered:%.1f\tAdaptiveThreshold:%.1f\tHR:%.1f\t"
+      "LowLimit:%.1f\tHighLimit:%.1f\n",
+      raw, filtered, adaptiveThreshold, heartRate, lowHrLimit, highHrLimit
     );
   }
   else {
    Serial.printf(
-      "RawPPG:%u\tFiltered:%.1f\tAdaptiveThreshold:%.1f\tHR:---\n",
-      raw, filtered, adaptiveThreshold
+      "RawPPG:%u\tFiltered:%.1f\tAdaptiveThreshold:%.1f\tHR:---\t"
+      "LowLimit:%.1f\tHighLimit:%.1f\n",
+      raw, filtered, adaptiveThreshold, lowHrLimit, highHrLimit
     );
 }
 
@@ -407,9 +421,33 @@ void detectBeat(float filtered, bool thresholdsChanged, uint32_t now) {
   previousFiltered = filtered;
 }
 
+void readHostLimits() {
+  // Bounded work per tick so the 20 ms sampling loop is never held up.
+  for (int i = 0; i < 32 && bluetoothReady && SerialBT.available(); i++) {
+    char c = (char)SerialBT.read();
+    if (c == '$') {
+      limitsLineLen = 0;  // a new message always starts here
+    }
+    if (c == '\n') {
+      float low, high;
+      if (parseLimits(limitsLine, limitsLineLen, &low, &high)) {
+        lowHrLimit = low;
+        highHrLimit = high;
+      }
+      limitsLineLen = 0;
+    }
+    else if (limitsLineLen < sizeof(limitsLine)) {
+      limitsLine[limitsLineLen++] = c;
+    }
+    else {
+      limitsLineLen = 0;  // too long to be ours; wait for the next '$'
+    }
+  }
+}
+
 void updateAlarm() {
   bool valid = signalValid && hrValid;
-  bool outsideLimits = heartRate < LOW_HR_LIMIT || heartRate > HIGH_HR_LIMIT;
+  bool outsideLimits = heartRate < lowHrLimit || heartRate > highHrLimit;
   // Normal HR and signal loss must not change the user's sound setting.
   bool sound = valid && outsideLimits && buzzerEnabled;
   if (sound && !buzzerOn) {
@@ -441,8 +479,8 @@ void writeRow(uint8_t row, const char* text) {
 void updateLcd() {
   char row[17];
   if (signalValid && hrValid) {
-    const char* status = heartRate < LOW_HR_LIMIT ? "LOW" :
-                         heartRate > HIGH_HR_LIMIT ? "HIGH" : "";
+    const char* status = heartRate < lowHrLimit ? "LOW" :
+                         heartRate > highHrLimit ? "HIGH" : "";
     snprintf(row, sizeof(row), "HR:%5.1fBPM %s", heartRate, status);
   }
   else {

@@ -1897,6 +1897,7 @@ def main():
         add_log(window, f"Opening Bluetooth port {port}.")
 
     link = PPGLink(port)
+    link.set_limits(low_hr_limit, high_hr_limit)   # ESP32 alarm uses the GUI limits
     link.start()
 
     # ========================================================
@@ -2101,6 +2102,10 @@ def main():
                     high_hr_limit = new_high_limit
                     if session_summary is not None:
                         session_summary.change_limits(low_hr_limit, high_hr_limit)
+                    try:
+                        link.set_limits(low_hr_limit, high_hr_limit)
+                    except ValueError:
+                        add_log(window, "HR limits not sent to the monitor (outside 0-999.9 BPM).")
                     add_log(
                         window,
                         f"HR limits updated: {low_hr_limit:.1f}-{high_hr_limit:.1f} BPM."

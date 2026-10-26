@@ -232,6 +232,8 @@ class SimulatedSerial:
         self.next_k = device.packets_due()   # only packets produced after connecting
         self.buf = bytearray()
         self.is_open = True
+        self.limits = None       # last valid (low, high) received from the host
+        self._rx = bytearray()
 
     def _alive(self):
         """True if the link has not been broken since opening. Author: Bianca Dibden"""
@@ -277,6 +279,25 @@ class SimulatedSerial:
             if time.monotonic() >= deadline:
                 return b""
             time.sleep(0.005)
+
+    def write(self, data):
+        """
+        Accept bytes from the host; remember the last valid $LIM message.
+
+        Author: Bianca Dibden
+        """
+        if not self.is_open or not self._alive():
+            raise SerialException("port is closed")
+        self._rx.extend(data)
+        while b"\n" in self._rx:
+            i = self._rx.index(b"\n")
+            line = bytes(self._rx[:i + 1])
+            del self._rx[:i + 1]
+            try:
+                self.limits = pf.parse_limits(line)
+            except pf.PacketError:
+                pass
+        return len(data)
 
     def reset_input_buffer(self):
         """Discard buffered input. Author: Bianca Dibden"""

@@ -27,7 +27,15 @@ Monitor while debugging, there is no little-/big-endian ambiguity between the
 ESP32 and the host, and '\\n' plus '$' give simple framing. The cost is size
 (268 B vs ~108 B binary), which is negligible for Bluetooth SPP at 1 packet/s.
 
-The ESP32 side of this format is in Code/esp32/bt_packet_sender/packet.cpp.
+The host also sends the ESP32 the heart-rate alarm limits set in the GUI:
+
+    $LIM,LLL.L,HHH.H*CC\n      (exactly LIMITS_LEN = 20 bytes)
+
+    LLL.L   low limit in BPM, HHH.H high limit in BPM (1 decimal place);
+            the ESP32 alarm/buzzer then uses these instead of its defaults.
+            CC is the same XOR checksum.
+
+The ESP32 side of this format is in Code/A2_Lumi/packet.cpp.
 Both sides must be changed together.
 
 Author: Bianca Dibden
@@ -49,6 +57,9 @@ HR_MAX = 999.9
 # 1 ($) + 6 (SSSSS,) + 6 (HHH.H,) + 2 (R,) + 50*4 + 49 commas + 1 (*) + 2 (CC) + 1 (\n)
 PACKET_LEN = 1 + 6 + 6 + 2 + SAMPLES_PER_PACKET * 4 + (SAMPLES_PER_PACKET - 1) + 1 + 2 + 1
 assert PACKET_LEN == 268
+
+
+LIMITS_LEN = 20          # $LIM,LLL.L,HHH.H*CC\n
 
 
 class PacketError(ValueError):
@@ -196,3 +207,63 @@ def parse_packet(line: bytes) -> Packet:
     if any(s < 0 or s > ADC_MAX for s in samples):
         raise PacketError("sample out of ADC range")
     return Packet(seq=seq, mcu_hr=mcu_hr, recording=rec == b"1", samples=samples)
+
+
+def build_limits(low: float, high: float) -> bytes:
+    """
+    Build the host -> ESP32 message carrying the HR alarm limits.
+
+    Parameters
+    ----------
+    low, high : float
+        Alarm limits in BPM. Must satisfy 0 <= low < high <= 999.9.
+
+    Returns
+    -------
+    bytes
+        A LIMITS_LEN-byte message ending in '\\n'.
+
+    Raises
+    ------
+    ValueError
+        If the limits are not finite, out of range, or low >= high.
+
+    Author: Bianca Dibden
+    """
+    low, high = round(float(low), 1), round(float(high), 1)
+    if not (0.0 <= low < high <= HR_MAX):
+        raise ValueError(f"invalid HR limits {low}-{high}")
+    payload = f"LIM,{low:05.1f},{high:05.1f}".encode("ascii")
+    msg = START + payload + CHECKSUM_SEP + f"{checksum(payload):02X}".encode("ascii") + END
+    assert len(msg) == LIMITS_LEN
+    return msg
+
+
+def parse_limits(line: bytes):
+    """
+    Decode a $LIM message (used by the simulator and tests).
+
+    Returns
+    -------
+    (float, float)
+        (low, high) in BPM.
+
+    Raises
+    ------
+    PacketError
+
+    Author: Bianca Dibden
+    """
+    line = line.rstrip(b"\r\n")
+    if len(line) != LIMITS_LEN - 1 or line[:5] != b"$LIM," or line[-3:-2] != CHECKSUM_SEP:
+        raise PacketError("bad limits message")
+    payload = line[1:-3]
+    try:
+        if int(line[-2:], 16) != checksum(payload):
+            raise PacketError("bad checksum")
+        low, high = float(payload[4:9]), float(payload[10:15])
+    except ValueError:
+        raise PacketError("non-numeric field") from None
+    if not (0.0 <= low < high <= HR_MAX) or payload[9:10] != b",":
+        raise PacketError("limits out of range")
+    return low, high

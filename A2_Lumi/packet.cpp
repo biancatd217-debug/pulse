@@ -8,6 +8,8 @@
 
 #include "packet.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 uint8_t packetChecksum(const char *payload, size_t len)
 /*
@@ -60,4 +62,42 @@ size_t buildPacket(char *out, size_t outSize, uint16_t seq, float heartRate,
   uint8_t cs = packetChecksum(out + 1, pos - 1);   // skip the '$'
   pos += snprintf(out + pos, outSize - pos, "*%02X\n", cs);
   return (size_t)pos;
+}
+
+bool parseLimits(const char *line, size_t len, float *low, float *high)
+/*
+** Checks a line of the form "$LIM,LLL.L,HHH.H*CC" (newline already removed).
+**
+** line - received characters
+** len  - number of characters
+** low, high - set on success
+**
+** returns - true if the format, checksum and limits (0 <= low < high
+**           <= 999.9) are all valid.
+**
+** Author: Bianca Dibden
+*/
+{
+  if (len != 19 || line[0] != '$' || line[16] != '*') return false;
+  if (memcmp(line + 1, "LIM,", 4) != 0 || line[10] != ',') return false;
+
+  char hex[3] = {line[17], line[18], '\0'};
+  char *end = nullptr;
+  long cs = strtol(hex, &end, 16);
+  if (*end != '\0' || end == hex) return false;
+  if ((uint8_t)cs != packetChecksum(line + 1, 15)) return false;
+
+  char lowText[6], highText[6];
+  memcpy(lowText, line + 5, 5);
+  memcpy(highText, line + 11, 5);
+  lowText[5] = highText[5] = '\0';
+  float l = strtof(lowText, &end);
+  if (*end != '\0') return false;
+  float h = strtof(highText, &end);
+  if (*end != '\0') return false;
+  if (!(l >= 0.0f && l < h && h <= 999.9f)) return false;
+
+  *low = l;
+  *high = h;
+  return true;
 }
