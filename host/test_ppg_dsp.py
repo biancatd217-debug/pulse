@@ -279,6 +279,7 @@ def test_signal_validation():
     Author: Bianca Dibden
     """
     print("\nTest 4 - signal validation")
+    strict, dsp.SHOW_HR_WHEN_SIGNAL_POOR = dsp.SHOW_HR_WHEN_SIGNAL_POOR, False
     rng = np.random.default_rng(5)
     cases = {
         "no finger (flat + small noise)": (1800 + 3 * rng.standard_normal(15 * FS), "flat"),
@@ -298,6 +299,16 @@ def test_signal_validation():
     res = run_stream(synthetic_ppg(20, 75, seed=6))
     frac_ok = np.mean(res["ok"][4:])
     check("clean 75 BPM signal: accepted", frac_ok >= 0.9, f"{frac_ok:.0%} of packets ok")
+    dsp.SHOW_HR_WHEN_SIGNAL_POOR = strict
+
+    # Testing mode (default): HR is still reported while the quality verdict says poor.
+    clipped = np.clip(synthetic_ppg(15, 70, amplitude=3000) + 2000, 0, 4095)
+    res = run_stream(clipped)
+    poor = [(ok, h) for ok, h in zip(res["ok"][5:], res["host_hr"][5:])]
+    shown = sum(1 for ok, h in poor if not ok and h is not None)
+    check("SHOW_HR_WHEN_SIGNAL_POOR: poor-signal packets still carry HR",
+          dsp.SHOW_HR_WHEN_SIGNAL_POOR and shown >= 0.5 * len(poor) and all(not ok for ok, _ in poor),
+          f"{shown}/{len(poor)} packets poor but with HR")
 
 
 def test_offline():

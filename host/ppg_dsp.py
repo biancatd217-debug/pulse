@@ -18,6 +18,7 @@ Typical use (one call per received packet):
     proc = PPGProcessor()
     result = proc.process_packet(samples)   # samples = list of 50 ints
     result.host_hr       # float BPM, or None if the signal is not trustworthy
+                         # (see SHOW_HR_WHEN_SIGNAL_POOR)
     result.filtered      # 50 filtered samples for plotting
     result.quality.ok    # bool; result.quality.reasons explains why not
 
@@ -67,8 +68,16 @@ FFT_WINDOW_S = 8.0       # FFT analysis window (8 s -> 0.125 Hz bins before zero
 FFT_NFFT = 2048          # zero-padded length (0.024 Hz / 1.5 BPM interpolation)
 
 FLAT_P2P_COUNTS = 20     # filtered peak-to-peak below this = no finger / no pulse
-SATURATION_MARGIN = 5    # samples within this many counts of 0 or 4095 are clipped
-SATURATION_FRAC = 0.05   # more than 5 % clipped samples = saturated
+# Testing aid: when True, the beat-detector HR is still reported (host_hr) while the
+# signal is judged poor, so the GUI keeps showing HR and the trend. The quality
+# verdict (quality.ok / message) is unchanged and still says "Signal poor".
+# Set False to withhold HR whenever the signal is not trustworthy (Reqt 10).
+SHOW_HR_WHEN_SIGNAL_POOR = True
+
+SATURATION_MARGIN = 1    # samples within this many counts of 0 or 4095 are clipped
+SATURATION_FRAC = 0.20   # more than 20 % clipped samples = saturated
+                         # (was 5 counts / 5 %: flagged real signals as saturated;
+                         #  a genuinely railed sensor sits at the limit for far longer)
 HR_AGREE_BPM = 12.0      # peak HR and FFT HR must agree within this
 MIN_SPECTRAL_PURITY = 0.40  # fraction of band power near the dominant peak
                             # (tested: real pulses >= 0.47, band-limited noise ~0.27)
@@ -542,7 +551,7 @@ class PPGProcessor:
         return ProcessedPacket(
             raw=raw, filtered=filtered, threshold=thresholds, beat_times=beats,
             hr_peak=hr_peak, hr_fft=hr_fft,
-            host_hr=hr_peak if quality.ok else None,
+            host_hr=hr_peak if (quality.ok or SHOW_HR_WHEN_SIGNAL_POOR) else None,
             quality=quality,
         )
 

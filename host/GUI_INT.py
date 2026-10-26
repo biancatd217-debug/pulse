@@ -1,30 +1,18 @@
-
 """
-
 LumiPulse PPG Monitor
-
 BMET2922 Major Project
 
 Role 3:
-
 - FreeSimpleGUI interface
-
 - Rolling HR and PPG plots
-
 - User-defined HR limits and alarms
-
 - System log
-
 - Recording-state handling
-
 - CSV recording
-
 - Researcher tab
-
 - Communication-loss alarm
 
 INTEGRATED VERSION:
-
 Live data comes from comms.py (PPGLink): Bluetooth packets are received,
 validated and processed by ppg_dsp.py, and each second the GUI receives
 communication status, MCU HR, recording state, raw + filtered PPG, host HR
@@ -60,7 +48,8 @@ from datetime import datetime
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from comms import PPGLink, STATUS_CONNECTED, STATUS_CONNECTING
+from comms import PPGLink, STATUS_CONNECTED, STATUS_CONNECTING, MAX_FORWARD_GAP
+from packet_format import SAMPLES_PER_PACKET, SEQ_MODULO
 # ============================================================
 # GUI COLOURS AND FONTS
 # ============================================================
@@ -78,7 +67,7 @@ RED = "#E57373"
 FONT_TITLE = ("Helvetica", 22, "bold")
 FONT_SECTION = ("Helvetica", 12, "bold")
 FONT_NORMAL = ("Helvetica", 11)
-FONT_SMALL = ("Helvetica", 9)
+FONT_SMALL = ("Helvetica", 11, "bold")
 FONT_HR = ("Helvetica", 80, "bold")
 FONT_VALUE = ("Helvetica", 15, "bold")
 
@@ -122,7 +111,6 @@ GUI_POLL_MS = 50
 # ============================================================
 
 def add_plot(canvas_element, figsize):
-
     """
     Creates and embeds a Matplotlib plot inside a GUI Canvas.
     """
@@ -134,7 +122,6 @@ def add_plot(canvas_element, figsize):
     ax.tick_params(
         colors=TEXT_MUTED,
         labelsize=9
-
     )
 
     ax.xaxis.label.set_color(TEXT_MUTED)
@@ -150,7 +137,6 @@ def add_plot(canvas_element, figsize):
     fig_agg = FigureCanvasTkAgg(
         fig,
         canvas_element.TKCanvas
-
     )
 
     fig_agg.draw()
@@ -159,7 +145,6 @@ def add_plot(canvas_element, figsize):
         side="top",
         fill="both",
         expand=True
-
     )
 
     return fig, ax, fig_agg
@@ -207,6 +192,26 @@ def ppg_spectrogram(samples):
     return frequency[keep], centres, 20 * np.log10(np.maximum(magnitude[:, keep].T, 1e-6))
 
 
+def display_packet_gap(previous, record, interrupted=False, timeout=5.0):
+    """Missing display slots, or None for an unknown-duration interruption.
+
+    Reception-time gaps are conservative: they do not measure acquisition time.
+    Never modify the received record or infer samples from an uncertain restart.
+    """
+    if interrupted or len(record.raw) != SAMPLES_PER_PACKET or len(record.filtered) != SAMPLES_PER_PACKET:
+        return None
+    if previous is None:
+        return 0
+    if len(previous.raw) != SAMPLES_PER_PACKET or len(previous.filtered) != SAMPLES_PER_PACKET:
+        return None
+    step = (record.seq - previous.seq) % SEQ_MODULO
+    if 1 < step <= MAX_FORWARD_GAP:
+        return (step - 1) * SAMPLES_PER_PACKET
+    if step != 1 or record.time - previous.time >= timeout:
+        return None
+    return 0
+
+
 class ResearcherAnalysis:
     """Ten seconds of continuous received filtered data; reset across gaps."""
     def __init__(self):
@@ -214,8 +219,8 @@ class ResearcherAnalysis:
         self.last_seq = None
         self.valid_samples = 0
 
-    def append(self, record):
-        if self.last_seq is not None and (record.seq - self.last_seq) % 65536 != 1:
+    def append(self, record, interrupted=False):
+        if interrupted or (self.last_seq is not None and (record.seq - self.last_seq) % 65536 != 1):
             self.samples.clear()
             self.valid_samples = 0
         self.last_seq = record.seq
@@ -264,15 +269,15 @@ def create_researcher_plots(window):
     """Create each Figure, TkAgg canvas and artist exactly once."""
     result = {}
     specs = (
-        ('fft', '-FFT_CANVAS-', 'Frequency Spectrum (Last 10 s)', 'Frequency (Hz)', 'Spectral Magnitude'),
+        ('fft', '-FFT_CANVAS-', 'Frequency Spectrum (Last 10 s)', 'Frequency (Hz)', 'Spectral Amplitude (ADC counts)'),
         ('spectrogram', '-SPECTROGRAM_CANVAS-', 'Spectrogram — Last 10 s', 'Time (s)', 'Frequency (Hz)'),
         ('derivative', '-DERIVATIVE_CANVAS-', 'Second Derivative (PPG Acceleration)', 'Time (s)', 'ADC counts/s^2'),
     )
     for name, key, title, xlabel, ylabel in specs:
         fig, ax, canvas = add_plot(window[key], (4.5, 1.7))
-        ax.set_title(title, color=TEXT, fontsize=10)
-        ax.set_xlabel(xlabel, fontsize=8)
-        ax.set_ylabel(ylabel, fontsize=8)
+        ax.set_title(title, color=TEXT, fontsize=11)
+        ax.set_xlabel(xlabel, fontsize=9)
+        ax.set_ylabel(ylabel, fontsize=9)
         if name == 'derivative':
             # Move only the label slightly left; retain axes/figure bounds.
             ax.yaxis.labelpad = 0
@@ -346,7 +351,6 @@ def update_researcher_plots(plots, analysis):
     waiting.set_visible(len(x) < SAMPLE_RATE)
     researcher_draw_idle(canvas)
 
-
 # ============================================================
 # COMPLETED-SESSION PDF REPORTS (no changes to the CSV schema)
 # ============================================================
@@ -396,7 +400,7 @@ def generate_session_pdf(session):
     """Read the CLOSED CSV, render independent report Figures with PdfPages.
 
     Runs in one background worker: no Tk calls, shared GUI artists, pyplot,
-    backend changes, or reprocessing of Host HR. PRV/count remain unavailable.
+    backend changes, or reprocessing of Host HR.
     """
     with open(session.filename, newline='') as source:
         rows = list(csv.DictReader(source))
@@ -444,8 +448,6 @@ def generate_session_pdf(session):
                 f'Mean Host - MCU difference (paired): {fmt(mean(difference))} BPM',
                 f'Valid Host HR packets: {len(valid_host)} / {session.packet_count}',
                 '', 'SIGNAL / QUALITY',
-                'PRV (SDNN, ms): --   |   Detected pulses: --',
-                'Beat timing is not exposed by the communications interface.',
                 f'Quality-approved packets: {session.good_packets} / {session.packet_count}',
                 *quality_lines[:3],
                 *( ['Full quality/limit history follows the signal views.'] if len(quality_lines) > 3 else []),
@@ -483,8 +485,14 @@ def generate_session_pdf(session):
             axes[0].set_ylabel('ADC counts')
             axes[0].set_xlabel('Session time (s)')
             axes[0].legend(fontsize=8)
-            axes[1].plot(times[packet_end], host[packet_end], label='Host HR', lw=1)
-            axes[1].plot(times[packet_end], mcu[packet_end], '--', label='MCU HR', lw=1)
+            # Break only at sequence discontinuities; receipt jitter is not loss.
+            hr_breaks = np.flatnonzero(np.diff(seq[packet_end]) % SEQ_MODULO != 1) + 1
+            hr_time = times[packet_end]
+            plot_time = np.insert(hr_time, hr_breaks, hr_time[hr_breaks])
+            plot_host = np.insert(host[packet_end], hr_breaks, np.nan)
+            plot_mcu = np.insert(mcu[packet_end], hr_breaks, np.nan)
+            axes[1].plot(plot_time, plot_host, label='Host HR', lw=1)
+            axes[1].plot(plot_time, plot_mcu, '--', label='MCU HR', lw=1)
             axes[1].set_title('HR trend and MCU / Host comparison', fontsize=11)
             axes[1].set_ylabel('BPM')
             axes[1].set_xlabel('Session time (s)')
@@ -554,7 +562,6 @@ class SessionReports:
         self.worker.shutdown(wait=True)
         self.poll(window)
 
-
 # ============================================================
 # SYSTEM LOG
 # ============================================================
@@ -577,7 +584,6 @@ def add_log_line(window, line):
     Author: Bianca Dibden (integration)
     """
     window["-SYSTEM_LOG-"].update(line + "\n", append=True)
-
 
 # ============================================================
 # COMMUNICATION STATUS
@@ -625,7 +631,6 @@ def update_communication_display(window, communication, link):
     window["-COMM_ALARM-"].update(
         "⚠ NO DATA FOR 5 s" if link.no_data_alarm else ""
     )
-
 
 # ============================================================
 # CSV RECORDING
@@ -690,7 +695,6 @@ def stop_recording(csv_file):
     """
     if csv_file is not None:
         csv_file.close()
-
 
 # ============================================================
 # HEART RATE STATUS
@@ -783,6 +787,7 @@ def configure_host_hr_panel(window):
     row_width = number_row.winfo_reqwidth()
     padding = limits_row.pack_info()["pady"]
     top_pad, bottom_pad = padding if isinstance(padding, tuple) else (padding, padding)
+    base_number_height = int(number.tk.call("font", "metrics", number.cget("font"), "-linespace"))
     # Freeze the normal request, not the allocated size, to avoid grid feedback.
     panel.configure(width=panel.winfo_reqwidth(), height=panel.winfo_reqheight())
     panel.pack_propagate(False)
@@ -795,8 +800,25 @@ def configure_host_hr_panel(window):
         scale = max(1.0, min(1.20, panel.winfo_width() / base_width,
                              panel.winfo_height() / base_height,
                              max(0, panel.winfo_width() - 20) / row_width))
-        style = (round(FONT_HR[1] * scale), round(FONT_VALUE[1] * scale),
-                 round(FONT_HR[1] * (scale - 1)))
+        original_number_size = round(FONT_HR[1] * scale)
+        number_scale = min(1.0 + 1.5 * (scale - 1.0),
+                           max(1.0, (panel.winfo_width() - 20) / row_width))
+        number_size = round(FONT_HR[1] * number_scale)
+        number_height = int(number.tk.call(
+            "font", "metrics", (FONT_HR[0], number_size, *FONT_HR[2:]), "-linespace"))
+        # Share added height with the gap, reserving room for every limits row.
+        available_gap = max(0, panel.winfo_height() - panel.winfo_reqheight()
+                            - max(0, number_height - base_number_height) - 4)
+        gap = min(round(max(0, panel.winfo_height() - base_height) * 0.5),
+                  available_gap)
+        original_height = int(number.tk.call(
+            "font", "metrics", (FONT_HR[0], original_number_size, *FONT_HR[2:]), "-linespace"))
+        # Keep the limits at their existing position as the number grows.
+        original_gap = min(round(max(0, panel.winfo_height() - base_height) * 0.5),
+                           max(0, panel.winfo_height() - panel.winfo_reqheight()
+                               - max(0, original_height - base_number_height) - 4))
+        gap = min(gap, max(0, original_gap - (number_height - original_height)))
+        style = (number_size, round(FONT_VALUE[1] * scale), gap)
         if style == last_style:
             return
         if style[0] != last_style[0]:
@@ -927,14 +949,12 @@ def fit_initial_window(window):
 
 
 def create_gui():
-
     """
     Creates the LumiPulse graphical user interface.
     """
 
     sg.theme("DarkGrey13")
     sg.set_options(
-
         background_color=BG,
         text_color=TEXT,
         element_background_color=BG,
@@ -942,7 +962,6 @@ def create_gui():
         input_text_color=TEXT,
         button_color=(TEXT, PANEL),
         font=FONT_NORMAL
-
     )
 
     # ========================================================
@@ -950,29 +969,24 @@ def create_gui():
     # ========================================================
 
     header = [
-
         sg.Text(
-
             "LUMIPULSE",
             font=FONT_TITLE,
             text_color=ACCENT,
             background_color=BG,
             expand_x=True
         ),
-
         sg.Text(
             "Bluetooth:",
             text_color=TEXT_MUTED,
             background_color=BG
         ),
-
         sg.Text(
             "● DISCONNECTED",
             key="-BT_STATUS-",
             text_color=RED,
             background_color=BG
         ),
-
         sg.Text(
             "",
             key="-COMM_ALARM-",
@@ -980,8 +994,6 @@ def create_gui():
             text_color=RED,
             background_color=BG
         ),
-
-
     ]
 
     # ========================================================
@@ -989,7 +1001,6 @@ def create_gui():
     # ========================================================
 
     current_hr_layout = [
-
         [
             sg.Text(
                 "HOST HEART RATE",
@@ -998,7 +1009,6 @@ def create_gui():
                 background_color=PANEL
             )
         ],
-
         [
             sg.Text(
                 "--.-",
@@ -1010,7 +1020,6 @@ def create_gui():
                 text_color=GREEN,
                 background_color=PANEL
             ),
-
             sg.Text(
                 "BPM",
                 key="-HR_BPM_LABEL-",
@@ -1035,55 +1044,53 @@ def create_gui():
                 text_color=TEXT_MUTED,
                 background_color=PANEL
             )
-
         ],
-
         [
             sg.Text(
                 "Low",
+                font=("Helvetica", 13),
                 size=(7, 1),
                 background_color=PANEL
             ),
-
             sg.Input(
                 str(LOW_HR_LIMIT),
+                font=("Helvetica", 13),
                 size=(7, 1),
                 key="-LOW_HR_LIMIT-",
                 enable_events=True
             ),
-
             sg.Text(
                 "BPM",
+                font=("Helvetica", 13),
                 text_color=TEXT_MUTED,
                 background_color=PANEL
             )
-
         ],
-
         [
             sg.Text(
                 "High",
+                font=("Helvetica", 13),
                 size=(7, 1),
                 background_color=PANEL
             ),
-
             sg.Input(
                 str(HIGH_HR_LIMIT),
+                font=("Helvetica", 13),
                 size=(7, 1),
                 key="-HIGH_HR_LIMIT-",
                 enable_events=True
             ),
-
             sg.Text(
                 "BPM",
+                font=("Helvetica", 13),
                 text_color=TEXT_MUTED,
                 background_color=PANEL
             )
         ],
-
         [
             sg.Button(
                 "Apply Limits",
+                font=("Helvetica", 13),
                 key="-APPLY_LIMITS-",
                 size=(12, 1)
             ),
@@ -1096,9 +1103,7 @@ def create_gui():
                 background_color=PANEL,
                 pad=((4, 0), 0)
             )
-
         ],
-
         [
             sg.Text(
                 "WAITING FOR HEART RATE",
@@ -1109,7 +1114,6 @@ def create_gui():
                 background_color=PANEL
             )
         ]
-
     ]
 
     # ========================================================
@@ -1124,20 +1128,15 @@ def create_gui():
     # ========================================================
 
     hr_trend_layout = [
-
         [
-
             sg.Text(
                 "HOST HEART RATE TREND",
                 font=FONT_SECTION,
                 text_color=TEXT_MUTED,
                 background_color=PANEL
             )
-
         ],
-
         [
-
             sg.Canvas(
                 key="-HR_TREND_CANVAS-",
                 size=(420, 160),
@@ -1145,9 +1144,7 @@ def create_gui():
                 expand_x=True,
                 expand_y=True
             )
-
         ]
-
     ]
 
     # ========================================================
@@ -1155,7 +1152,6 @@ def create_gui():
     # ========================================================
 
     ppg_layout = [
-
         [
             sg.Text(
                 "LIVE PPG WAVEFORM",
@@ -1163,11 +1159,8 @@ def create_gui():
                 text_color=TEXT_MUTED,
                 background_color=PANEL
             )
-
         ],
-
         [
-
             sg.Canvas(
                 key="-PPG_CANVAS-",
                 size=(420, 160),
@@ -1175,69 +1168,39 @@ def create_gui():
                 expand_x=True,
                 expand_y=True
             )
-
         ],
-
         [
-
             sg.Text(
                 "Signal display:",
                 text_color=TEXT_MUTED,
                 background_color=PANEL
             ),
-
             sg.Radio(
-
                 "Raw",
-
                 group_id="PPG_DISPLAY",
-
                 default=True,
-
                 enable_events=True,
-
                 key="-SHOW_RAW-",
-
                 background_color=PANEL,
-
                 text_color=TEXT
-
             ),
-
             sg.Radio(
-
                 "Filtered",
-
                 group_id="PPG_DISPLAY",
-
                 enable_events=True,
-
                 key="-SHOW_FILTERED-",
-
                 background_color=PANEL,
-
                 text_color=TEXT
-
             ),
-
             sg.Radio(
-
                 "Both",
-
                 group_id="PPG_DISPLAY",
-
                 enable_events=True,
-
                 key="-SHOW_BOTH-",
-
                 background_color=PANEL,
-
                 text_color=TEXT
-
             )
-
         ]
-
     ]
 
     # ========================================================
@@ -1245,148 +1208,80 @@ def create_gui():
     # ========================================================
 
     session_layout = [
-
         [
-
             sg.Text(
-
                 "SESSION",
-
                 font=FONT_SECTION,
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Text(
-
                 "Recording",
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Text(
-
                 "● OFF",
-
                 key="-SESSION_RECORDING-",
-
                 font=FONT_VALUE,
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.HorizontalSeparator()
-
         ],
-
         [
-
             sg.Text(
-
                 "Elapsed time",
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Text(
-
                 "00:00:00",
-
                 key="-SESSION_TIME-",
-
                 font=("Helvetica", 20, "bold"),
-
                 text_color=TEXT,
-
                 background_color=PANEL
-
             )
-
         ]
     ]
 
     # ========================================================
-
     # SYSTEM LOG
-
     # ========================================================
 
     system_log_layout = [
-
         [
-
             sg.Text(
-
                 "SYSTEM LOG",
-
                 font=FONT_SECTION,
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Multiline(
-
                 size=(60, 4),
-
                 key="-SYSTEM_LOG-",
-
                 disabled=True,
-
                 autoscroll=True,
-
                 expand_x=True,
-
                 background_color=BG,
-
                 text_color=TEXT
-
             )
-
         ]
-
     ]
 
     # ========================================================
-
     # MONITOR TAB
-
     # ========================================================
-
     # Each region has its own Tk row wrapper. After finalization these
     # wrappers become the cells of one shared grid (see configure_monitor_grid).
     monitor_layout = [
@@ -1418,370 +1313,198 @@ def create_gui():
     ]
 
     # ========================================================
-
     # RESEARCHER - MCU VS HOST HR
-
     # ========================================================
 
     researcher_hr_layout = [
-
         [
-
             sg.Text(
-
                 "MCU vs HOST HEART RATE",
-
                 font=FONT_SECTION,
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Text(
-
                 "MCU HR",
-
                 size=(14, 1),
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             ),
-
             sg.Text(
-
                 "--.- BPM",
-
                 key="-MCU_HR-",
-
                 font=FONT_VALUE,
-
                 text_color=ACCENT,
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Text(
-
                 "Host HR",
-
                 size=(14, 1),
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             ),
-
             sg.Text(
-
                 "--.- BPM",
-
                 key="-HOST_HR-",
-
                 font=FONT_VALUE,
-
                 text_color=GREEN,
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Text(
-
                 "Difference",
-
                 size=(14, 1),
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             ),
-
             sg.Text(
-
                 "--.- BPM",
-
                 key="-HR_DIFFERENCE-",
-
                 background_color=PANEL
-
             )
-
         ]
-
     ]
 
     # ========================================================
-
     # RESEARCHER - PROCESSING INFORMATION
-
     # ========================================================
 
     processing_layout = [
-
         [
-
             sg.Text(
-
                 "PROCESSING INFORMATION",
-
                 font=FONT_SECTION,
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Text(
-
                 "Sampling rate:",
-
                 size=(18, 1),
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             ),
-
             sg.Text(
-
                 "50 Hz",
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Text(
-
                 "Host processing:",
-
                 size=(18, 1),
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             ),
-
             sg.Text(
-
                 "Waiting for data",
-
                 key="-FILTER_STATUS-",
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Text(
-
                 "Last packet:",
-
                 size=(18, 1),
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             ),
-
             sg.Text(
-
                 "--",
-
                 key="-LAST_PACKET-",
-
                 background_color=PANEL
-
             )
-
         ]
-
     ]
 
     # ========================================================
-
     # RESEARCHER - HR COMPARISON GRAPH
-
     # ========================================================
 
     comparison_plot_layout = [
-
         [
-
             sg.Text(
-
                 "MCU vs HOST HR TREND",
-
                 font=FONT_SECTION,
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Canvas(
-
                 key="-HR_COMPARISON_CANVAS-",
-
                 size=(420, 150),
-
                 expand_x=True, expand_y=True,
-
                 background_color=PANEL
-
             )
-
         ]
-
     ]
 
     # ========================================================
-
     # RESEARCHER - ADDITIONAL SIGNAL ANALYSIS
-
     # ========================================================
 
     signal_analysis_layout = [
-
         [
-
             sg.Text(
-
                 "ADDITIONAL SIGNAL ANALYSIS",
-
                 font=FONT_SECTION,
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Text(
-
                 "Signal quality:",
-
                 size=(18, 1),
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             ),
-
             sg.Text(
-
                 "--",
-
                 key="-SIGNAL_QUALITY-",
                 size=(34, 2),
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Text(
-
                 "Detected pulses:",
-
                 size=(18, 1),
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             ),
-
             sg.Text(
-
                 "--",
-
                 key="-PULSE_COUNT-",
-
                 background_color=PANEL
-
             )
-
         ],
-
         [
-
             sg.Text(
-
                 "Average HR:",
-
                 size=(18, 1),
-
                 text_color=TEXT_MUTED,
-
                 background_color=PANEL
-
             ),
-
             sg.Text(
-
                 "--.- BPM",
-
                 key="-AVERAGE_HR-",
-
                 background_color=PANEL
-
             )
-
         ]
-
     ]
 
     # Reuse existing measurement elements/keys; only their presentation moves.
     researcher_hr_layout[0][0].DisplayText = "HEART RATE"
     signal_analysis_layout[0][0].DisplayText = "SIGNAL SUMMARY"
-    signal_analysis_layout[3][0].DisplayText = "Average Host HR"
+    signal_analysis_layout[3][0].DisplayText = "Average Host HR:"
     quality_row = signal_analysis_layout[1]
     quality_value = quality_row[1]
     average_row = signal_analysis_layout[3]
@@ -1793,27 +1516,26 @@ def create_gui():
     last_packet_value = sg.Text("--", key="-LAST_PACKET-", visible=False)
     processing_layout = [
         [sg.Text("PROCESSING", font=FONT_SECTION, text_color=TEXT_MUTED, background_color=PANEL)],
-        [sg.Text("Sampling rate: 50 Hz", background_color=PANEL)],
-        [sg.Text("Host filter: 0.5-5 Hz", background_color=PANEL)],
-        [sg.Text("band-pass", background_color=PANEL)],
-        [sg.Text("Spectrogram: 4 s Hann, 0.5 s hop", size=(25, 2),
+        [sg.Text("Sampling: 50 Hz", background_color=PANEL)],
+        [sg.Text("Band-pass: 0.5–5 Hz", background_color=PANEL)],
+        [sg.Text("Detection: Adaptive threshold", background_color=PANEL)],
+        [sg.Text("Host HR: Median of 3–6 IBIs", background_color=PANEL)],
+        [sg.Text("STFT: 4 s Hann, 0.5 s hop", size=(25, 2),
                  background_color=PANEL)],
         [filter_value, last_packet_value, pulse_value]
     ]
     signal_analysis_layout = [
         signal_analysis_layout[0],
         [quality_row[0]], [quality_value], average_row,
-        [sg.Text("PPG amplitude (P-P):", background_color=PANEL)],
+        [sg.Text("PPG amplitude (P-P):", text_color=TEXT_MUTED, background_color=PANEL)],
         [sg.Text("--", key="-AMPLITUDE-", background_color=PANEL)],
-        [sg.Text("PRV SDNN (ms)", background_color=PANEL),
-         sg.Text("--", key="-PRV-", background_color=PANEL)]
     ]
     # Fixed display slots preserve stable panel requests during live updates.
     value_sizes = {
         "-MCU_HR-": (10, 1), "-HOST_HR-": (10, 1),
         "-HR_DIFFERENCE-": (10, 1), "-FILTER_STATUS-": (24, 2),
         "-LAST_PACKET-": (24, 1), "-SIGNAL_QUALITY-": (24, 3),
-        "-PULSE_COUNT-": (4, 1), "-PRV-": (6, 1),
+        "-PULSE_COUNT-": (4, 1),
         "-AVERAGE_HR-": (9, 1), "-AMPLITUDE-": (16, 1),
     }
     for panel_layout in (researcher_hr_layout, processing_layout, signal_analysis_layout):
@@ -1825,7 +1547,7 @@ def create_gui():
                     element.AutoSizeText = False
                 elif element.Type == sg.ELEM_TYPE_TEXT:
                     # Keep the long technical caption wrapped inside the sidebar.
-                    if element.DisplayText == "Spectrogram: 4 s Hann, 0.5 s hop":
+                    if element.DisplayText == "STFT: 4 s Hann, 0.5 s hop":
                         element.Size = (25, 2)
                         element.AutoSizeText = False
                     else:
@@ -1844,9 +1566,7 @@ def create_gui():
         )]], background_color=PANEL, border_width=1, expand_x=True, expand_y=True)
 
     # ========================================================
-
     # RESEARCHER TAB
-
     # ========================================================
 
     researcher_layout = [
@@ -1864,67 +1584,38 @@ def create_gui():
     ]
 
     # ========================================================
-
     # COMPLETE WINDOW
-
     # ========================================================
 
     layout = [
-
         header,
-
         [sg.HorizontalSeparator()],
-
         [
-
             sg.TabGroup(
-
                 [[
-
                     sg.Tab(
-
                         "Monitor",
-
                         monitor_layout,
-
                         background_color=BG
-
                     ),
-
                     sg.Tab(
-
                         "Researcher",
-
                         researcher_layout,
-
                         background_color=BG
-
                     )
-
                 ]],
-
                 expand_x=True,
-
                 expand_y=True
-
             )
-
         ]
-
     ]
 
     window = sg.Window(
-
         "LumiPulse PPG Monitor",
-
         layout,
-
         background_color=BG,
-
         finalize=True,
-
         resizable=True
-
     )
 
     configure_monitor_grid(window)
@@ -1983,7 +1674,8 @@ def autoscale_y(ax, *arrays, minimum_span=20):
     ax.set_ylim(middle - 0.6 * span, middle + 0.6 * span)
 
 
-def update_hr_display(window, host_hr, signal_message, low_limit, high_limit):
+def update_hr_display(window, host_hr, signal_message, low_limit, high_limit,
+                      signal_ok=True):
     """
     Shows the current host HR to 1 d.p. (Reqts 9, 10) and the HR alarm
     (Reqt 11). If the signal is not trustworthy (host_hr is None) the HR
@@ -2007,15 +1699,17 @@ def update_hr_display(window, host_hr, signal_message, low_limit, high_limit):
         return "low"
     if host_hr > high_limit:
         return "high"
+    if not signal_ok:
+        # HR is still shown (testing), but flag that it is unverified.
+        window["-CURRENT_HR-"].update(text_color=AMBER)
+        window["-HR_STATUS-"].update(signal_message.upper(), text_color=AMBER)
     return "normal"
-
 
 # ============================================================
 # MAIN PROGRAM
 # ============================================================
 
 def main():
-
     # Port comes from the command line:  py gui.py COM5
     # With no argument the built-in ESP32 simulator is used.
     port = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PORT
@@ -2077,7 +1771,7 @@ def main():
     hr_ax.set_xlabel("Time (s)", labelpad=3)
     hr_ax.set_ylabel("Heart Rate (BPM)", labelpad=3)
     hr_ax.set_xlim(0, HR_TREND_SECONDS)
-    hr_ax.set_ylim(40, 120)
+    hr_ax.set_ylim(40, 200)
     hr_ax.grid(True, alpha=0.2)
     hr_fig.subplots_adjust(left=0.11, right=0.98, bottom=0.22, top=0.96)
     hr_fig_agg.draw()
@@ -2096,7 +1790,7 @@ def main():
     cmp_ax.set_xlabel("Time (s)", labelpad=3)
     cmp_ax.set_ylabel("Heart Rate (BPM)", labelpad=3)
     cmp_ax.set_xlim(0, HR_TREND_SECONDS)
-    cmp_ax.set_ylim(40, 120)
+    cmp_ax.set_ylim(40, 200)
     cmp_ax.grid(True, alpha=0.2)
     style_legend(cmp_ax, [cmp_host_line, cmp_mcu_line])
     cmp_fig.subplots_adjust(left=0.17, right=0.97, bottom=0.24, top=0.80)
@@ -2164,7 +1858,7 @@ def main():
 
         recording_state = new_state
 
-    def show_hr(host_hr, signal_message):
+    def show_hr(host_hr, signal_message, signal_ok=True):
         """
         Updates the HR display/alarm and logs every change of alarm state
         (e.g. 'Pulse Low', Reqt 13), whether caused by new data or by the
@@ -2174,7 +1868,7 @@ def main():
         """
         nonlocal hr_alarm_state
         new_alarm_state = update_hr_display(
-            window, host_hr, signal_message, low_hr_limit, high_hr_limit
+            window, host_hr, signal_message, low_hr_limit, high_hr_limit, signal_ok
         )
         if session_summary is not None:
             session_summary.alarm(new_alarm_state)
@@ -2192,6 +1886,9 @@ def main():
     # ========================================================
 
     communication = {"shown": None}
+    display_previous_record = None
+    display_connection_count = 0
+    display_interrupted = False
 
     add_log(window, "LumiPulse host application started.")
     if port == "SIM":
@@ -2215,6 +1912,12 @@ def main():
 
         now = time.monotonic()
         elapsed_time = now - program_start_time
+        # Latch interruptions even when no records arrive in this GUI poll.
+        connections = link.stats["connects"]
+        if (link.status != STATUS_CONNECTED or link.no_data_alarm
+                or connections != display_connection_count):
+            display_interrupted = True
+        display_connection_count = connections
 
         # ----------------------------------------------------
         # LOG EVENTS FROM COMMS (connect, lost, invalid, ...)
@@ -2243,8 +1946,26 @@ def main():
                 save_packet(csv_writer, record, recording_start_time)
                 session_summary.observe(record)
 
-            researcher.append(record)
+            missing = display_packet_gap(display_previous_record, record,
+                                         display_interrupted, link.alarm_after)
+            interrupted = missing is None or missing > 0
+            if interrupted:
+                hr_times.append(elapsed_time)
+                hr_values.append(np.nan)
+                mcu_hr_values.append(np.nan)
+                if missing is None:
+                    raw_ppg_buffer.fill(np.nan)
+                    filtered_ppg_buffer.fill(np.nan)
+                else:
+                    # Slots mark absent measurements in the display only.
+                    slots = min(missing, PPG_BUFFER_SIZE)
+                    raw_ppg_buffer = np.roll(raw_ppg_buffer, -slots)
+                    filtered_ppg_buffer = np.roll(filtered_ppg_buffer, -slots)
+                    raw_ppg_buffer[-slots:] = np.nan
+                    filtered_ppg_buffer[-slots:] = np.nan
+            researcher.append(record, interrupted=interrupted)
             researcher_dirty = True
+            display_previous_record = record
 
             # Rolling PPG buffers: drop the oldest 50, add the newest 50
             n = len(record.raw)
@@ -2262,6 +1983,9 @@ def main():
             latest_record = record
 
         if records:
+            # A connection change cannot be located inside a queued batch.
+            # Keep its records separate conservatively, then resume continuity.
+            display_interrupted = False
             rec = latest_record
 
             # ------------------------------------------------
@@ -2275,7 +1999,9 @@ def main():
                 autoscale_y(ppg_ax, filtered_ppg_buffer)
             else:
                 # Both: remove the raw DC level so both share one axis
-                raw_centred = raw_ppg_buffer - np.nanmean(raw_ppg_buffer)
+                raw_centred = raw_ppg_buffer - (
+                    np.nanmean(raw_ppg_buffer) if np.isfinite(raw_ppg_buffer).any() else 0
+                )
                 raw_ppg_line.set_ydata(raw_centred)
                 filtered_ppg_line.set_ydata(filtered_ppg_buffer)
                 autoscale_y(ppg_ax, raw_centred, filtered_ppg_buffer)
@@ -2284,7 +2010,7 @@ def main():
             # ------------------------------------------------
             # CURRENT HR + ALARM (Reqts 9, 10, 11)
             # ------------------------------------------------
-            show_hr(rec.host_hr, rec.signal_message)
+            show_hr(rec.host_hr, rec.signal_message, rec.signal_ok)
 
             # ------------------------------------------------
             # KEEP ONLY THE MOST RECENT 60 s OF HR
@@ -2323,7 +2049,6 @@ def main():
                 rec.signal_message, text_color=GREEN if rec.signal_ok else AMBER
             )
             window["-PULSE_COUNT-"].update("--")
-            window["-PRV-"].update("--")
             amplitude = researcher.amplitude()
             window["-AMPLITUDE-"].update("--" if amplitude is None else f"{amplitude:.1f} ADC counts")
 
@@ -2381,7 +2106,8 @@ def main():
                         f"HR limits updated: {low_hr_limit:.1f}-{high_hr_limit:.1f} BPM."
                     )
                     if latest_record is not None and not link.no_data_alarm:
-                        show_hr(current_hr, latest_record.signal_message)
+                        show_hr(current_hr, latest_record.signal_message,
+                                latest_record.signal_ok)
             except ValueError:
                 window["-HR_LIMIT_ERROR-"].update("Invalid HR limits")
                 add_log(window, "Invalid HR limits: enter numeric values.")
@@ -2402,12 +2128,12 @@ def main():
             if ppg_display_mode == "raw":
                 raw_ppg_line.set_label("Raw PPG")
                 raw_ppg_line.set_ydata(raw_ppg_buffer)
-                ppg_ax.set_ylabel("PPG (ADC counts)", labelpad=3)
+                ppg_ax.set_ylabel("Amplitude (ADC counts)", labelpad=3)
                 style_legend(ppg_ax, [raw_ppg_line], compact=True)
                 autoscale_y(ppg_ax, raw_ppg_buffer)
             elif ppg_display_mode == "filtered":
                 filtered_ppg_line.set_ydata(filtered_ppg_buffer)
-                ppg_ax.set_ylabel("PPG (ADC counts)", labelpad=3)
+                ppg_ax.set_ylabel("Amplitude (ADC counts)", labelpad=3)
                 style_legend(ppg_ax, [filtered_ppg_line], compact=True)
                 autoscale_y(ppg_ax, filtered_ppg_buffer)
             else:
@@ -2417,7 +2143,7 @@ def main():
                 raw_ppg_line.set_label("Raw PPG (DC removed)")
                 raw_ppg_line.set_ydata(raw_centred)
                 filtered_ppg_line.set_ydata(filtered_ppg_buffer)
-                ppg_ax.set_ylabel("PPG (ADC counts)", labelpad=3)
+                ppg_ax.set_ylabel("Amplitude (ADC counts)", labelpad=3)
                 style_legend(ppg_ax, [raw_ppg_line, filtered_ppg_line], compact=True)
                 autoscale_y(ppg_ax, raw_centred, filtered_ppg_buffer)
 
@@ -2434,7 +2160,6 @@ def main():
         set_recording(False)
     reports.close(window)
     window.close()
-
 
 # ============================================================
 # RUN PROGRAM
