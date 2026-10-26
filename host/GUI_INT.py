@@ -1674,7 +1674,8 @@ def autoscale_y(ax, *arrays, minimum_span=20):
     ax.set_ylim(middle - 0.6 * span, middle + 0.6 * span)
 
 
-def update_hr_display(window, host_hr, signal_message, low_limit, high_limit):
+def update_hr_display(window, host_hr, signal_message, low_limit, high_limit,
+                      signal_ok=True):
     """
     Shows the current host HR to 1 d.p. (Reqts 9, 10) and the HR alarm
     (Reqt 11). If the signal is not trustworthy (host_hr is None) the HR
@@ -1698,6 +1699,10 @@ def update_hr_display(window, host_hr, signal_message, low_limit, high_limit):
         return "low"
     if host_hr > high_limit:
         return "high"
+    if not signal_ok:
+        # HR is still shown (testing), but flag that it is unverified.
+        window["-CURRENT_HR-"].update(text_color=AMBER)
+        window["-HR_STATUS-"].update(signal_message.upper(), text_color=AMBER)
     return "normal"
 
 # ============================================================
@@ -1853,7 +1858,7 @@ def main():
 
         recording_state = new_state
 
-    def show_hr(host_hr, signal_message):
+    def show_hr(host_hr, signal_message, signal_ok=True):
         """
         Updates the HR display/alarm and logs every change of alarm state
         (e.g. 'Pulse Low', Reqt 13), whether caused by new data or by the
@@ -1863,7 +1868,7 @@ def main():
         """
         nonlocal hr_alarm_state
         new_alarm_state = update_hr_display(
-            window, host_hr, signal_message, low_hr_limit, high_hr_limit
+            window, host_hr, signal_message, low_hr_limit, high_hr_limit, signal_ok
         )
         if session_summary is not None:
             session_summary.alarm(new_alarm_state)
@@ -2005,7 +2010,7 @@ def main():
             # ------------------------------------------------
             # CURRENT HR + ALARM (Reqts 9, 10, 11)
             # ------------------------------------------------
-            show_hr(rec.host_hr, rec.signal_message)
+            show_hr(rec.host_hr, rec.signal_message, rec.signal_ok)
 
             # ------------------------------------------------
             # KEEP ONLY THE MOST RECENT 60 s OF HR
@@ -2101,7 +2106,8 @@ def main():
                         f"HR limits updated: {low_hr_limit:.1f}-{high_hr_limit:.1f} BPM."
                     )
                     if latest_record is not None and not link.no_data_alarm:
-                        show_hr(current_hr, latest_record.signal_message)
+                        show_hr(current_hr, latest_record.signal_message,
+                                latest_record.signal_ok)
             except ValueError:
                 window["-HR_LIMIT_ERROR-"].update("Invalid HR limits")
                 add_log(window, "Invalid HR limits: enter numeric values.")
