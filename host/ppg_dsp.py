@@ -315,6 +315,8 @@ class AdaptiveBeatDetector:
         refractory = int(REFRACTORY_S * self.fs)
 
         for i, x in enumerate(filtered):
+            # a) Slide the window forward by one sample and recompute the two
+            #    threshold levels from its low/high percentiles.
             self.window.append(x)
             lo, hi = np.percentile(self.window, [THRESH_PCTL, 100 - THRESH_PCTL])
             rng = hi - lo
@@ -322,12 +324,17 @@ class AdaptiveBeatDetector:
             thr_low = lo + THRESH_LOW_FRAC * rng
             thresholds[i] = thr_high
 
+            # b) Only look for beats if the window has a real pulse-sized swing.
             if rng >= min_p2p:
+                # c) Arm when the signal is low; fire when it then rises above
+                #    the upper level (same armed/upper/lower idea as the MCU).
                 if x < thr_low:
                     self.armed = True
                 elif self.armed and x > thr_high:
                     self.armed = False
                     n = self.sample_index
+                    # d) Refractory check, then store the interval between this
+                    #    beat and the previous one.
                     if self.last_beat_index is None or n - self.last_beat_index >= refractory:
                         if self.last_beat_index is not None:
                             ibi = (n - self.last_beat_index) / self.fs
@@ -478,6 +485,29 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
 
 # ---------------------------------------------------------------------------
 # Real-time processor (one call per packet)
+#
+# DATA FLOW for each 1 s packet (50 raw samples from comms.py):
+#
+#   raw samples
+#     |
+#     +--> StreamingBandpass.process()      0.5-5 Hz band-pass, keeps state between packets
+#     |        -> filtered samples (zero-centred; used for plotting AND everything below)
+#     |
+#     +--> AdaptiveBeatDetector.process()   per sample: threshold from the last 2 s (P10/P90),
+#     |        |                            rising crossing = beat, hysteresis + refractory
+#     |        +--> inter-beat intervals (IBIs)
+#     |        +--> heart_rate(): 60 / median(last 6 IBIs)      => hr_peak
+#     |
+#     +--> fft_heart_rate()                 last 8 s of filtered data, dominant peak => hr_fft
+#     |                                     (+ "spectral purity" = how clean the rhythm is)
+#     |
+#     +--> assess_signal()                  flat? saturated? hr_peak vs hr_fft agree?
+#                                           IBIs regular? purity high?  => SignalQuality
+#
+#   host_hr = hr_peak (shown on the GUI; the FFT value is only a cross-check)
+#
+# The MCU (A2_Lumi.ino) does the first two stages in a simpler form; it has no
+# FFT and no quality checks. See the Research note "ESP32 vs Host Signal Processing".
 # ---------------------------------------------------------------------------
 class PPGProcessor:
     """
@@ -533,16 +563,24 @@ class PPGProcessor:
         Author: Bianca Dibden
         """
         raw = np.asarray(samples, dtype=float)
+        # 1. Remove baseline drift and high-frequency noise (state carries over,
+        #    so packet boundaries are invisible to the filter).
         filtered = self.bandpass.process(raw)
+        # 2. Find beats in the filtered signal, sample by sample.
         thresholds, beats = self.detector.process(filtered)
 
+        # 3. Keep the last 8 s of data: the FFT and the quality checks need
+        #    more than the 1 s that arrives in each packet.
         self.raw_hist.extend(raw)
         self.filt_hist.extend(filtered)
         self.samples_seen += len(raw)
 
+        # 4. Two independent HR estimates: beat intervals (primary) and FFT peak
+        #    (cross-check).
         hr_peak = self.detector.heart_rate()
         hr_fft, purity = fft_heart_rate(np.array(self.filt_hist), self.fs)
 
+        # 5. Decide whether to trust them (the first 3 s are always "warming up").
         if self.samples_seen < 3 * self.fs:
             # Filter and threshold need a few seconds to settle.
             quality = SignalQuality(ok=False, reasons=["warming_up"])

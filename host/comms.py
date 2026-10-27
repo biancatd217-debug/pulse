@@ -39,6 +39,32 @@ Author: Bianca Dibden
 Date: 15-Oct-2026
 """
 
+# ---------------------------------------------------------------------------
+# HOW THE PIECES CONNECT (read this first)
+#
+#   ESP32 (A2_Lumi.ino)                          HOST (this folder)
+#   -------------------                          ------------------
+#   samples PPG @ 50 Hz
+#   every 50 samples -> buildPacket()  ==BT==>   comms.py  PPGLink._read_once()
+#     (A2_Lumi/packet.cpp)                         |  bytes -> lines ('\n' framing)
+#                                                  v
+#                                                PPGLink._handle_line()
+#                                                  |  1. packet_format.parse_packet()  length/'$'/checksum/ranges
+#                                                  |  2. SequenceTracker.check()       lost / duplicate / restart
+#                                                  |  3. ppg_dsp.PPGProcessor.process_packet()
+#                                                  |        filter -> beats -> HR -> FFT -> quality
+#                                                  v
+#                                                HostRecord  --queue-->  GUI (GUI_INT.py / gui.py)
+#                                                                         calls get_records() / get_events()
+#
+#   GUI "Apply Limits" -> PPGLink.set_limits() -> packet_format.build_limits()
+#   -> sent back to the ESP32 once a second ($LIM,...), read by readHostLimits().
+#
+# Threads: the GUI runs on the main thread; PPGLink._run() runs in a background
+# thread and talks to the GUI only through two thread-safe queues (_records and
+# _events), so the GUI never blocks on Bluetooth.
+# ---------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import argparse
@@ -372,15 +398,18 @@ class PPGLink:
         Author: Bianca Dibden
         """
         while not self._stop.is_set():
+            # State A - not connected: try to open the port, wait, try again
+            # (this is the "keep retrying" behaviour of Reqts 16-17).
             if self._ser is None:
                 if not self._try_connect():
                     self._check_alarm()
                     self._stop.wait(self.retry_interval)
                     continue
-            self._read_once()
-            self._send_limits()
-            self._check_alarm()
-            self._check_silence()
+            # State B - connected: one pass of the loop does four jobs.
+            self._read_once()       # 1. read bytes, validate + process any full packets
+            self._send_limits()     # 2. resend the GUI's HR limits to the ESP32 if due
+            self._check_alarm()     # 3. no valid packet for 5 s -> raise GUI alarm
+            self._check_silence()   # 4. port open but no bytes at all -> force a reconnect
 
     def _try_connect(self):
         """
@@ -500,12 +529,15 @@ class PPGLink:
 
         Author: Bianca Dibden
         """
-        # Re-synchronise: if junk precedes a start character, drop the junk.
+        # --- Step 1: framing. Bluetooth is a byte stream, so a "line" may start
+        # with leftovers of a previous packet. Keep only from the last '$'.
         start = line.rfind(pf.START)
         if start > 0:
             line = line[start:]
         if line.strip() == b"":
             return
+        # --- Step 2: validation. parse_packet checks length, '$', checksum, field
+        # count and value ranges. Anything corrupt is logged and discarded.
         try:
             pkt = pf.parse_packet(line)
         except pf.PacketError as e:
@@ -516,6 +548,9 @@ class PPGLink:
             self._log(f"Invalid packet discarded ({e})")
             return
 
+        # --- Step 3: sequence check. Drop repeats / late packets; if packets were
+        # lost or the ESP32 restarted, reset the DSP because the 50 Hz stream is
+        # no longer continuous (filter and beat timing would be wrong).
         outcome, n_lost = self._seq.check(pkt.seq)
         if outcome in ("duplicate", "out_of_order"):
             self.stats[outcome] += 1
@@ -530,8 +565,13 @@ class PPGLink:
             self._log(f"Sequence restarted at {pkt.seq} (ESP32 reset?)")
             self.processor.reset()
 
+        # --- Step 4: signal processing (ppg_dsp.py). Only the 50 RAW samples go in;
+        # the MCU's own HR (pkt.mcu_hr) is NOT used by the host DSP, it is just
+        # carried along so the GUI can show MCU HR next to host HR.
         t0 = time.perf_counter()
         result = self.processor.process_packet(pkt.samples)
+        # --- Step 5: bundle everything the GUI needs into one HostRecord and hand
+        # it over through the queue (the GUI picks it up with get_records()).
         rec = HostRecord(
             time=time.time(), seq=pkt.seq,
             mcu_hr=pkt.mcu_hr if pkt.mcu_hr > 0 else None,
