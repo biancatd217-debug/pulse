@@ -245,9 +245,16 @@ class PPGLink:
         """
         self.port = port
         self.baudrate = baudrate
-        if serial_factory is None and port == "SIM":
+        if serial_factory is None and port in ("SIM", "SIM_QUALITY"):
             from packet_sim import SimulatedDevice
-            self.sim_device = SimulatedDevice()
+            if port == "SIM_QUALITY":
+                # Scripted faults (no finger, saturation, noise, motion...) so the
+                # signal-quality display can be seen working; see sim_quality_data.py.
+                from sim_quality_data import make_quality_demo_data
+                samples, rates = make_quality_demo_data()
+                self.sim_device = SimulatedDevice(samples=samples, rates=rates)
+            else:
+                self.sim_device = SimulatedDevice()
             serial_factory = self.sim_device.open
         self.serial_factory = serial_factory or self._open_real_port
         self.retry_interval = retry_interval
