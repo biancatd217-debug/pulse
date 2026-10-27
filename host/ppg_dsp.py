@@ -54,11 +54,13 @@ BANDPASS_LOW_HZ = 0.5    # below this: respiration, motion, contact-pressure dri
 BANDPASS_HIGH_HZ = 5.0   # above this: mains pickup / sensor noise; keeps 1st harmonics
 BANDPASS_ORDER = 2       # Butterworth prototype order (band-pass is 2x this = 4th order)
 
-THRESH_WINDOW_S = 2.5    # rolling window for adaptive threshold min/max
+THRESH_WINDOW_S = 2.0    # rolling window for adaptive threshold min/max (same as the MCU)
 THRESH_HIGH_FRAC = 0.6   # beat registered when signal rises above min + 0.6*range
 THRESH_LOW_FRAC = 0.4    # re-armed when signal falls below min + 0.4*range (hysteresis)
-THRESH_PCTL = 5          # 'min'/'max' are the 5th/95th percentiles: a brief motion or
-                         # pressure spike cannot drag the threshold away from the beats
+                         # (wider than the MCU's 0.55/0.45: 0.55/0.45 gave false beats on
+                         #  the drifting-baseline test; the host can afford the wider band)
+THRESH_PCTL = 10         # 'min'/'max' are the 10th/90th percentiles (as on the MCU): a brief
+                         # motion or pressure spike cannot drag the threshold off the beats
 REFRACTORY_S = 60.0 / HR_MAX_BPM   # ignore crossings closer than one beat at 220 BPM
 HR_IBI_COUNT = 6         # HR = 60 / median of the last N inter-beat intervals
 HR_MIN_IBIS = 3          # need at least this many intervals before reporting an HR
@@ -248,7 +250,7 @@ class AdaptiveBeatDetector:
 
     For every filtered sample the threshold is recomputed from the spread of
     the last THRESH_WINDOW_S seconds:
-        lo = 5th percentile, hi = 95th percentile of the window
+        lo = 10th percentile, hi = 90th percentile of the window
         thr_high = lo + THRESH_HIGH_FRAC * (hi - lo)
         thr_low  = lo + THRESH_LOW_FRAC  * (hi - lo)
     Percentiles are used instead of the true min/max so that a short artefact
