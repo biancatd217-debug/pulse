@@ -134,7 +134,7 @@ def make_quality_demo_data(seed=1):
     samples : list of int
         Raw 12-bit ADC samples, 50 per second.
     rates : list of float
-        MCU pulse rate (BPM) for each sample, in the format packet_sim expects
+        MCU pulse rate (BPM) for each sample, in the format sim_packet expects
         (0 where the ESP32 would report no valid pulse).
 
     Author: Bianca Dibden

@@ -14,8 +14,8 @@ SimulatedDevice behaves like the real ESP32 + Bluetooth SPP port:
 It can also drive a pseudo-terminal (Mac/Linux) so a separate program, e.g.
 the GUI, can open it exactly like the real Bluetooth port:
 
-    python3 packet_sim.py --pty                 # prints a port name to open
-    python3 packet_sim.py --pty --drop 0.05 --corrupt 0.05
+    python3 sim_packet.py --pty                 # prints a port name to open
+    python3 sim_packet.py --pty --drop 0.05 --corrupt 0.05
 
 Author: Bianca Dibden
 Date: 15-Oct-2026

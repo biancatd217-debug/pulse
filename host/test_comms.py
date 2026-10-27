@@ -1,6 +1,6 @@
 """
 Tests for the Bluetooth link (packet_format.py, comms.py), run without
-hardware against the simulated ESP32 in packet_sim.py.
+hardware against the simulated ESP32 in sim_packet.py.
 
   1. Packet format: round trip, fixed length, and rejection of each kind of
      bad packet. If a C++ compiler is available, also checks that the ESP32's
@@ -32,7 +32,7 @@ import time
 
 import packet_format as pf
 from comms import PPGLink, SequenceTracker, STATUS_CONNECTED
-from packet_sim import SimulatedDevice
+from sim_packet import SimulatedDevice
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = []
@@ -136,7 +136,7 @@ def test_packet_format():
 
     # ESP32 C++ implementation must produce identical bytes
     cxx = shutil.which("g++") or shutil.which("clang++")
-    src = os.path.join(HERE, "..", "esp32", "bt_packet_sender")
+    src = os.path.join(HERE, "..", "A2_Lumi")
     if not cxx:
         print("  [SKIP] C++ compiler not found - ESP32 packet.cpp cross-check skipped")
         return
