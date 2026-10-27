@@ -8,9 +8,9 @@ The GUI displays these results; Researcher analysis does not replace Host HR det
 Recording follows the MCU packet flag and produces a CSV and a PDF session summary.
 
 Run from the project root:
-    python3 host/GUI_INT.py SIM
-    python3 host/GUI_INT.py COM5
-    python3 host/GUI_INT.py /dev/tty.BMET2922-G00
+    python3 host/lp_gui.py SIM
+    python3 host/lp_gui.py COM5
+    python3 host/lp_gui.py /dev/tty.BMET2922-G00
 
 Use the actual Bluetooth serial port for hardware; no argument defaults to SIM.
 Integration with comms.py / ppg_dsp.py: Bianca Dibden
@@ -1703,7 +1703,7 @@ def update_hr_display(window, host_hr, signal_message, low_limit, high_limit,
 
 # Run the GUI event loop: receive records, update displays and manage recording.
 def main():
-    # Select a real serial port via argv, e.g. GUI_INT.py COM5.
+    # Select a real serial port via argv, e.g. lp_gui.py COM5.
     # With no argument the built-in ESP32 simulator is used.
     port = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PORT
 

@@ -54,7 +54,7 @@ Date: 15-Oct-2026
 #                                                  |  3. ppg_dsp.PPGProcessor.process_packet()
 #                                                  |        filter -> beats -> HR -> FFT -> quality
 #                                                  v
-#                                                HostRecord  --queue-->  GUI (GUI_INT.py / gui.py)
+#                                                HostRecord  --queue-->  GUI (lp_gui.py)
 #                                                                         calls get_records() / get_events()
 #
 #   GUI "Apply Limits" -> PPGLink.set_limits() -> packet_format.build_limits()
