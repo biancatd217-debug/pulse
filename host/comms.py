@@ -130,7 +130,7 @@ class HostRecord:
     signal_ok : bool
         Signal validation verdict.
     signal_message : str
-        e.g. 'Signal OK' or 'Signal poor: flat (no finger?)'.
+        e.g. 'Pulse signal good' or 'Pulse signal poor: no clear pulse rhythm'.
     latency_s : float
         Host processing time for this packet (s). End-to-end latency is this
         plus up to 1 s of buffering on the MCU plus Bluetooth transmission.
