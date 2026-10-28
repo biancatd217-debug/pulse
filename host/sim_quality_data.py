@@ -30,7 +30,7 @@ AMPLITUDE = 350          # pulse height in ADC counts
 # (name, kind, seconds, bpm, expected host message)
 SCHEDULE = [
     ("Clean pulse (warm-up)",        "clean",     14, 72,  "acquiring signal, then Signal OK"),
-    ("Sensor saturated",             "saturated", 14, 70,  "Heart rate unreliable: saturated"),
+    ("Sensor saturated",             "saturated", 14, 70,  "Heart rate signal unreliable: saturated"),
     ("Clean again",                  "clean",     14, 70,  "Signal OK"),
     ("Random noise, no pulse",       "noise",     14, 0,   "pulse methods disagree / irregular / no clear rhythm"),
     ("Clean again",                  "clean",     14, 80,  "Signal OK"),

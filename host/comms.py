@@ -132,7 +132,7 @@ class HostRecord:
     signal_details : list of str
         Measured value vs. threshold for each failed quality check (empty if OK).
     signal_message : str
-        e.g. 'Signal OK' or 'Heart rate unreliable: saturated (too much pressure/light)'.
+        e.g. 'Signal OK' or 'Heart rate signal unreliable: saturated (too much pressure/light)'.
     latency_s : float
         Host processing time for this packet (s). End-to-end latency is this
         plus up to 1 s of buffering on the MCU plus Bluetooth transmission.

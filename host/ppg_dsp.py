@@ -72,7 +72,7 @@ FFT_NFFT = 2048          # zero-padded length (0.024 Hz / 1.5 BPM interpolation)
 FLAT_P2P_COUNTS = 20     # beat detector: window peak-to-peak below this = no pulse, no beats declared
 # Testing aid: when True, the beat-detector HR is still reported (host_hr) while the
 # signal is judged poor, so the GUI keeps showing HR and the trend. The quality
-# verdict (quality.ok / message) is unchanged and still says "Heart rate unreliable".
+# verdict (quality.ok / message) is unchanged and still says "Heart rate signal unreliable".
 # Set False to withhold HR whenever the signal is not trustworthy (Reqt 10).
 SHOW_HR_WHEN_SIGNAL_POOR = True
 
@@ -158,7 +158,7 @@ class SignalQuality:
         Returns
         -------
         str
-            e.g. 'Signal OK' or 'Heart rate unreliable: saturated (too much pressure/light)'.
+            e.g. 'Signal OK' or 'Heart rate signal unreliable: saturated (too much pressure/light)'.
 
         Author: Bianca Dibden
         """
@@ -173,7 +173,7 @@ class SignalQuality:
             "warming_up": "acquiring signal",
             "no_beats": "no beats detected",
         }
-        return "Heart rate unreliable: " + ", ".join(text.get(r, r) for r in self.reasons)
+        return "Heart rate signal unreliable: " + ", ".join(text.get(r, r) for r in self.reasons)
 
 
 @dataclass
