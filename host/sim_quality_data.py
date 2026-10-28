@@ -29,17 +29,17 @@ AMPLITUDE = 350          # pulse height in ADC counts
 
 # (name, kind, seconds, bpm, expected host message)
 SCHEDULE = [
-    ("Clean pulse (warm-up)",        "clean",     14, 72,  "acquiring signal, then Signal OK"),
-    ("No finger on sensor",          "flat",      12, 0,   "Signal poor: flat (no finger?)"),
-    ("Finger back on",               "clean",     14, 75,  "Signal OK (recovers)"),
-    ("Sensor saturated",             "saturated", 14, 70,  "Signal poor: saturated"),
-    ("Clean again",                  "clean",     14, 70,  "Signal OK"),
+    ("Clean pulse (warm-up)",        "clean",     14, 72,  "acquiring pulse signal, then good"),
+    ("No finger on sensor",          "flat",      12, 0,   "no pulse waveform detected"),
+    ("Finger back on",               "clean",     14, 75,  "Pulse signal good (recovers)"),
+    ("Sensor saturated",             "saturated", 14, 70,  "sensor reading at its limit"),
+    ("Clean again",                  "clean",     14, 70,  "Pulse signal good"),
     ("Random noise, no pulse",       "noise",     14, 0,   "pulse methods disagree / irregular / no clear rhythm"),
-    ("Clean again",                  "clean",     14, 80,  "Signal OK"),
+    ("Clean again",                  "clean",     14, 80,  "Pulse signal good"),
     ("Movement artefact",            "motion",    18, 72,  "disagree / irregular beat intervals"),
-    ("Clean again",                  "clean",     14, 72,  "Signal OK"),
+    ("Clean again",                  "clean",     14, 72,  "Pulse signal good"),
     ("Irregular rhythm",             "irregular", 18, 75,  "irregular beat intervals"),
-    ("Clean pulse",                  "clean",     14, 68,  "Signal OK"),
+    ("Clean pulse",                  "clean",     14, 68,  "Pulse signal good"),
 ]
 
 
@@ -134,7 +134,7 @@ def make_quality_demo_data(seed=1):
     samples : list of int
         Raw 12-bit ADC samples, 50 per second.
     rates : list of float
-        MCU pulse rate (BPM) for each sample, in the format packet_sim expects
+        MCU pulse rate (BPM) for each sample, in the format sim_packet expects
         (0 where the ESP32 would report no valid pulse).
 
     Author: Bianca Dibden

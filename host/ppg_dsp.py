@@ -6,7 +6,7 @@ Takes the 50 raw PPG samples that arrive in each 1 s Bluetooth packet and produc
   - a host-calculated heart rate from adaptive-threshold beat detection,
   - an FFT-based heart rate used as an independent cross-check,
   - a signal-quality verdict (no finger / saturated / implausible HR / methods disagree),
-so the GUI can show "signal poor" instead of a nonsense heart rate.
+so the GUI can show "pulse signal poor" instead of a nonsense heart rate.
 
 Real-time processing is causal and keeps state between packets, so there are no
 edge artefacts at the 1 s packet boundaries. A zero-phase offline function is
@@ -72,7 +72,7 @@ FFT_NFFT = 2048          # zero-padded length (0.024 Hz / 1.5 BPM interpolation)
 FLAT_P2P_COUNTS = 20     # filtered peak-to-peak below this = no finger / no pulse
 # Testing aid: when True, the beat-detector HR is still reported (host_hr) while the
 # signal is judged poor, so the GUI keeps showing HR and the trend. The quality
-# verdict (quality.ok / message) is unchanged and still says "Signal poor".
+# verdict (quality.ok / message) is unchanged and still says "Pulse signal poor".
 # Set False to withhold HR whenever the signal is not trustworthy (Reqt 10).
 SHOW_HR_WHEN_SIGNAL_POOR = True
 
@@ -136,6 +136,10 @@ class SignalQuality:
         """
         Measured value against its threshold for one reason code.
 
+        Wording is deliberately about the pulse signal (not "signal quality" or
+        "signal strength", which could be mistaken for the Bluetooth link) and
+        hedges the likely cause rather than asserting it.
+
         Returns
         -------
         str
@@ -171,15 +175,15 @@ class SignalQuality:
         Returns
         -------
         str
-            'Signal OK', 'Acquiring signal...' or
+            'Pulse signal good', 'Acquiring pulse signal' or
             'Check sensor\nReason: saturated (+1 more)'.
 
         Author: Bianca Dibden
         """
         if self.ok:
-            return "Signal OK"
+            return "Pulse signal good"
         if "warming_up" in self.reasons:
-            return "Acquiring signal..."
+            return "Acquiring pulse signal"
         labels = [self.REASON_LABELS.get(r, r) for r in self.reasons]
         if show_all:
             return "Check sensor\nReason: " + ", ".join(labels)
@@ -193,7 +197,7 @@ class SignalQuality:
         Returns
         -------
         str
-            'Signal OK', 'Acquiring signal...', or three lines: 'Check sensor',
+            'Pulse signal good', 'Acquiring pulse signal', or three lines: 'Check sensor',
             'Reason: saturated, irregular beats' (every failed check) and the
             measured-vs-threshold detail for each, joined with '; '.
 
