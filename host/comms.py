@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import argparse
 import queue
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -442,7 +443,8 @@ class PPGLink:
                 pass
         except (SerialException, OSError, ValueError) as e:
             if self._attempts == 1 or self._attempts % 10 == 0:
-                self._log(f"Connecting to {self.port}... (attempt {self._attempts}: {short_error(e)})")
+                what = "Connecting" if self.stats["connects"] == 0 else "Reconnecting"
+                self._log(f"{what} to {self.port}... (attempt {self._attempts}: {short_error(e)})")
             return False
 
         self._ser = ser
@@ -497,7 +499,7 @@ class PPGLink:
 
         Author: Bianca Dibden
         """
-        self._log(f"Connection lost ({reason})")
+        self._log(f"Connection lost - {reason}")
         self._close()
         self.status = STATUS_CONNECTING
 
@@ -637,6 +639,15 @@ def short_error(e):
 
     Author: Bianca Dibden
     """
+    err = getattr(e, "errno", None)
+    if err is None:                     # pyserial wraps OS errors as text: "[Errno 2] ..."
+        m = re.search(r"\[Errno (\d+)\]", str(e))
+        err = int(m.group(1)) if m else None
+    plain = {2: "port not found", 6: "device disconnected", 5: "device disconnected",
+             13: "permission denied", 16: "port busy (in use by another program)",
+             19: "device disconnected", 35: "port busy"}
+    if err in plain:
+        return plain[err]
     text = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
     return text[:80]
 
