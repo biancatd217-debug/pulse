@@ -82,12 +82,12 @@ GREEN = "#7BC47F"
 AMBER = "#E6B566"
 RED = "#E57373"
 
-FONT_TITLE = ("Helvetica", 24, "bold")
-FONT_SECTION = ("Helvetica", 13, "bold")
-FONT_NORMAL = ("Helvetica", 12)
-FONT_SMALL = ("Helvetica", 12, "bold")
+FONT_TITLE = ("Helvetica", 22, "bold")
+FONT_SECTION = ("Helvetica", 12, "bold")
+FONT_NORMAL = ("Helvetica", 11)
+FONT_SMALL = ("Helvetica", 11, "bold")
 FONT_HR = ("Helvetica", 80, "bold")
-FONT_VALUE = ("Helvetica", 16, "bold")
+FONT_VALUE = ("Helvetica", 15, "bold")
 
 # ============================================================
 # SYSTEM SETTINGS
@@ -844,14 +844,15 @@ def update_hr_status(
 def configure_monitor_grid(window):
     """Allocate the Monitor layout once; Tk handles later changes in window size.
 
-    The plot heights split 1:1 and the log sits below both. The right-hand column (HR box,
-    limits, pulse signal, session) is one cell; configure_right_column() gives any spare
-    height to the HR box. The main column widths use a 65:35 ratio.
+    The plot heights split 1:1, HR/Session heights split 2:1, and the log sits below both.
+    The HR sidebar (Host HR, limits, pulse signal) is one cell; configure_hr_sidebar() gives
+    any spare height to the HR box. The main column widths use a 65:35 ratio.
     """
     cells = (
         ("-TREND_PANEL-", 0, 0, 3, 1),
-        ("-RIGHT_COLUMN-", 0, 1, 6, 1),
+        ("-HR_SIDEBAR-", 0, 1, 4, 1),
         ("-PPG_PANEL-", 3, 0, 3, 1),
+        ("-SESSION_PANEL-", 4, 1, 2, 1),
         ("-LOG_PANEL-", 6, 0, 1, 2),
     )
     wrappers = [window[key].ParentRowFrame for key, *_ in cells]
@@ -875,10 +876,10 @@ def configure_monitor_grid(window):
         window[key].ParentRowFrame.pack_configure(fill="both", expand=True)
 
 
-def configure_right_column(window):
-    """Give spare height in the right-hand column to the HR box; keep the rest compact."""
+def configure_hr_sidebar(window):
+    """Give spare height in the HR sidebar to the HR box; keep the controls compact."""
     for key, grows in (("-HR_PANEL-", True), ("-HR_CONTROLS_PANEL-", False),
-                       ("-PULSE_PANEL-", False), ("-SESSION_PANEL-", False)):
+                       ("-PULSE_PANEL-", False)):
         row = window[key].ParentRowFrame
         if grows:
             row.pack_configure(fill="both", expand=True)
@@ -887,18 +888,17 @@ def configure_right_column(window):
 
 
 def configure_host_hr_panel(window):
-    """Centre the Host HR number in its own box and scale it up as the box grows."""
+    """Scale the HR/BPM fonts with the Host HR box (Alva's scaling: up to 1.2x, HR number a little more)."""
     window.TKroot.update_idletasks()
     panel = window["-HR_PANEL-"].Widget
     number = window["-CURRENT_HR-"].Widget
     bpm = window["-HR_BPM_LABEL-"].Widget
     number_row = window["-CURRENT_HR-"].ParentRowFrame
-    heading_row = window["-HR_HEADING-"].ParentRowFrame
-    # The number/BPM row takes all spare space and sits in the middle of it.
+    # The number/BPM row takes the spare space and sits in the middle of it.
     number_row.pack_configure(expand=True, fill="none", anchor="center")
     window.TKroot.update_idletasks()
-    base_row_width = number_row.winfo_reqwidth()
-    base_number_height = int(number.tk.call("font", "metrics", number.cget("font"), "-linespace"))
+    base_width, base_height = panel.winfo_width(), panel.winfo_height()
+    row_width = number_row.winfo_reqwidth()
     # Keep the box's requested size fixed so larger fonts cannot trigger a resize loop.
     panel.configure(width=panel.winfo_reqwidth(), height=panel.winfo_reqheight())
     panel.pack_propagate(False)
@@ -908,16 +908,19 @@ def configure_host_hr_panel(window):
     def apply_scale():
         nonlocal pending, last_style
         pending = None
-        spare_width = max(1, panel.winfo_width() - 30)
-        spare_height = max(1, panel.winfo_height() - heading_row.winfo_height() - 24)
-        # Fit the number within the box; never below the designed size, capped for sanity.
-        scale = max(1.0, min(2.4, spare_width / base_row_width,
-                             spare_height / base_number_height))
-        style = (round(FONT_HR[1] * scale), round(FONT_VALUE[1] * scale))
+        scale = max(1.0, min(1.20, panel.winfo_width() / base_width,
+                             panel.winfo_height() / base_height,
+                             max(0, panel.winfo_width() - 20) / row_width))
+        # Scale BPM with the box; allow the HR number a small extra increase.
+        number_scale = min(1.0 + 1.5 * (scale - 1.0),
+                           max(1.0, (panel.winfo_width() - 20) / row_width))
+        style = (round(FONT_HR[1] * number_scale), round(FONT_VALUE[1] * scale))
         if style == last_style:
             return
-        number.configure(font=(FONT_HR[0], style[0], *FONT_HR[2:]))
-        bpm.configure(font=(FONT_VALUE[0], style[1], *FONT_VALUE[2:]))
+        if style[0] != last_style[0]:
+            number.configure(font=(FONT_HR[0], style[0], *FONT_HR[2:]))
+        if style[1] != last_style[1]:
+            bpm.configure(font=(FONT_VALUE[0], style[1], *FONT_VALUE[2:]))
         last_style = style
 
     def schedule_scale(event):
@@ -1079,7 +1082,7 @@ def fit_initial_window(window):
     # Plot canvases have comfortable requested sizes, not hard minimums.
     # Base the horizontal minimum on the actual right-side controls instead.
     monitor_width = max(window[key].Widget.winfo_reqwidth()
-                        for key in ("-HR_CONTROLS_PANEL-", "-SESSION_PANEL-")) / .35
+                        for key in ("-HR_SIDEBAR-", "-SESSION_PANEL-")) / .35
     researcher_width = window["-RESEARCH_SIDEBAR-"].Widget.winfo_reqwidth() / .22
     minimum_width = min(available_width, int(max(monitor_width, researcher_width) + 50))
     minimum_height = min(available_height, root.winfo_reqheight())
@@ -1201,20 +1204,20 @@ def create_gui():
         [
             sg.Text(
                 "Low",
-                font=("Helvetica", 14),
+                font=("Helvetica", 13),
                 size=(7, 1),
                 background_color=PANEL
             ),
             sg.Input(
                 str(LOW_HR_LIMIT),
-                font=("Helvetica", 14),
+                font=("Helvetica", 13),
                 size=(7, 1),
                 key="-LOW_HR_LIMIT-",
                 enable_events=True
             ),
             sg.Text(
                 "BPM",
-                font=("Helvetica", 14),
+                font=("Helvetica", 13),
                 text_color=TEXT_MUTED,
                 background_color=PANEL
             )
@@ -1222,20 +1225,20 @@ def create_gui():
         [
             sg.Text(
                 "High",
-                font=("Helvetica", 14),
+                font=("Helvetica", 13),
                 size=(7, 1),
                 background_color=PANEL
             ),
             sg.Input(
                 str(HIGH_HR_LIMIT),
-                font=("Helvetica", 14),
+                font=("Helvetica", 13),
                 size=(7, 1),
                 key="-HIGH_HR_LIMIT-",
                 enable_events=True
             ),
             sg.Text(
                 "BPM",
-                font=("Helvetica", 14),
+                font=("Helvetica", 13),
                 text_color=TEXT_MUTED,
                 background_color=PANEL
             )
@@ -1243,7 +1246,7 @@ def create_gui():
         [
             sg.Button(
                 "Apply Limits",
-                font=("Helvetica", 14),
+                font=("Helvetica", 13),
                 key="-APPLY_LIMITS-",
                 size=(12, 1)
             ),
@@ -1261,7 +1264,7 @@ def create_gui():
             sg.Text(
                 "WAITING FOR HEART RATE",
                 key="-HR_STATUS-",
-                font=("Helvetica", 12, "bold"),
+                font=("Helvetica", 11, "bold"),
                 size=(28, 2),
                 text_color=AMBER,
                 background_color=PANEL
@@ -1435,7 +1438,7 @@ def create_gui():
             sg.Text(
                 "00:00:00",
                 key="-SESSION_TIME-",
-                font=("Helvetica", 21, "bold"),
+                font=("Helvetica", 20, "bold"),
                 text_color=TEXT,
                 background_color=PANEL
             )
@@ -1494,14 +1497,14 @@ def create_gui():
                 background_color=PANEL, border_width=1,
                 expand_x=True
             )],
-            pulse_signal_row,
-            [sg.Frame(
-                "", session_layout, key="-SESSION_PANEL-",
-                background_color=PANEL, border_width=1,
-                expand_x=True
-            )]
-        ], key="-RIGHT_COLUMN-", background_color=BG, pad=(0, 0),
+            pulse_signal_row
+        ], key="-HR_SIDEBAR-", background_color=BG, pad=(0, 0),
            expand_x=True, expand_y=True, vertical_alignment="top")],
+        [sg.Frame(
+            "", session_layout, key="-SESSION_PANEL-",
+            background_color=PANEL, border_width=1,
+            expand_x=True, expand_y=True
+        )],
         [sg.Frame(
             "", system_log_layout, key="-LOG_PANEL-",
             background_color=PANEL, border_width=1,
@@ -1783,7 +1786,7 @@ def create_gui():
 
     # POST-FINALISATION: configure the layout after FreeSimpleGUI creates the Tk widgets.
     configure_monitor_grid(window)
-    configure_right_column(window)
+    configure_hr_sidebar(window)
     configure_researcher_grid(window)
     fit_initial_window(window)
     configure_host_hr_panel(window)
