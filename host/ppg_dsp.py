@@ -81,8 +81,6 @@ SATURATION_FRAC = 0.20   # more than 20 % clipped samples = saturated
                          # (was 5 counts / 5 %: flagged real signals as saturated;
                          #  a genuinely railed sensor sits at the limit for far longer)
 HR_AGREE_BPM = 12.0      # peak HR and FFT HR must agree within this
-MIN_SPECTRAL_PURITY = 0.40  # fraction of band power near the dominant peak
-                            # (tested: real pulses >= 0.47, band-limited noise ~0.27)
 MAX_IBI_CV = 0.20        # max coefficient of variation of recent beat intervals
                          # (tested: real pulses <= 0.08, noise ~0.25)
 
@@ -101,11 +99,17 @@ class SignalQuality:
         True if no problems were found.
     reasons : list of str
         Short machine-readable codes, e.g. 'flat', 'saturated', 'hr_out_of_range',
-        'hr_disagree', 'irregular', 'low_spectral_purity', 'no_beats', 'warming_up'.
+        'hr_disagree', 'irregular', 'no_beats', 'warming_up'.
     spectral_purity : float
         Fraction of 0.5-3.5 Hz power within +/-0.15 Hz of the dominant peak (0-1).
     peak_to_peak : float
         Peak-to-peak amplitude of the filtered window (ADC counts).
+    clipped_frac : float
+        Fraction of raw samples at the ADC rails (0-1).
+    hr_peak, hr_fft : float or None
+        The two pulse-rate estimates compared by the agreement check (BPM).
+    ibi_cv : float or None
+        Coefficient of variation of the recent beat intervals (None if too few).
 
     Author: Bianca Dibden
     """
@@ -113,31 +117,84 @@ class SignalQuality:
     reasons: list = field(default_factory=list)
     spectral_purity: float = 0.0
     peak_to_peak: float = 0.0
+    clipped_frac: float = 0.0
+    hr_peak: float = None
+    hr_fft: float = None
+    ibi_cv: float = None
 
-    def message(self):
+    # Short label for each reason code, in priority order (first = shown as the reason).
+    REASON_LABELS = {
+        "saturated": "saturated",
+        "flat": "flat",
+        "no_beats": "no beats",
+        "hr_out_of_range": "HR out of range",
+        "hr_disagree": "HR methods disagree",
+        "irregular": "irregular beats",
+    }
+
+    def detail(self, reason):
         """
-        Human-readable summary for the GUI / system log.
+        Measured value against its threshold for one reason code.
 
         Returns
         -------
         str
-            e.g. 'Signal OK' or 'Signal poor: flat (no finger?)'.
+            e.g. 'Clipped samples 34% (max 20%)'.
+
+        Author: Bianca Dibden
+        """
+        if reason == "flat":
+            return f"Pulse amplitude {self.peak_to_peak:.0f} (min {FLAT_P2P_COUNTS})"
+        if reason == "saturated":
+            return f"Clipped samples {self.clipped_frac * 100:.0f}% (max {SATURATION_FRAC * 100:.0f}%)"
+        if reason == "no_beats":
+            return "No pulse peaks found in the current window"
+        if reason == "hr_out_of_range":
+            return f"HR {self.hr_peak:.0f} bpm (allowed {HR_MIN_BPM:.0f}-{HR_MAX_BPM:.0f})"
+        if reason == "hr_disagree":
+            return (f"Peak HR {self.hr_peak:.0f} vs FFT HR {self.hr_fft:.0f} bpm "
+                    f"(max diff {HR_AGREE_BPM:.0f})")
+        if reason == "irregular":
+            return f"Beat timing spread {self.ibi_cv * 100:.0f}% (max {MAX_IBI_CV * 100:.0f}%)"
+        return reason
+
+    def status_lines(self):
+        """
+        The two-line status: headline and reason (no detail line).
+
+        Returns
+        -------
+        str
+            'Signal OK', 'Acquiring signal...' or
+            'Check sensor\nReason: saturated (+1 more)'.
 
         Author: Bianca Dibden
         """
         if self.ok:
             return "Signal OK"
-        text = {
-            "flat": "flat (no finger?)",
-            "saturated": "saturated (too much pressure/light)",
-            "hr_out_of_range": "pulse rate out of range",
-            "hr_disagree": "pulse methods disagree (motion?)",
-            "low_spectral_purity": "no clear pulse rhythm",
-            "irregular": "irregular beat intervals (motion/noise?)",
-            "warming_up": "acquiring signal",
-            "no_beats": "no beats detected",
-        }
-        return "Signal poor: " + ", ".join(text.get(r, r) for r in self.reasons)
+        if "warming_up" in self.reasons:
+            return "Acquiring signal..."
+        reason = self.REASON_LABELS.get(self.reasons[0], self.reasons[0])
+        more = f" (+{len(self.reasons) - 1} more)" if len(self.reasons) > 1 else ""
+        return f"Check sensor\nReason: {reason}{more}"
+
+    def message(self):
+        """
+        Full human-readable summary for the GUI / system log.
+
+        Returns
+        -------
+        str
+            'Signal OK', 'Acquiring signal...', or three lines: 'Check sensor',
+            'Reason: saturated (+1 more)' and the measured-vs-threshold detail
+            for every failed check, joined with '; '.
+
+        Author: Bianca Dibden
+        """
+        text = self.status_lines()
+        if self.ok or "warming_up" in self.reasons:
+            return text
+        return text + "\n" + "; ".join(self.detail(r) for r in self.reasons)
 
 
 @dataclass
@@ -430,7 +487,6 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
       irregular   - coefficient of variation (std/mean) of the recent beat
                     intervals > MAX_IBI_CV. Noise produces random intervals;
                     a real pulse is nearly periodic over a few beats.
-      low_spectral_purity - purity < MIN_SPECTRAL_PURITY
 
     Parameters
     ----------
@@ -455,6 +511,7 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
     filtered = np.asarray(filtered, dtype=float)
     p2p = float(np.ptp(filtered[-FS * 3:])) if len(filtered) else 0.0
     reasons = []
+    ibi_cv = None
 
     clipped = np.mean((raw <= SATURATION_MARGIN) | (raw >= ADC_MAX - SATURATION_MARGIN))
     if clipped > SATURATION_FRAC:
@@ -473,14 +530,14 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
                 reasons.append("hr_disagree")
         if ibis is not None and len(ibis) >= 3:
             ibis = np.asarray(ibis, dtype=float)
-            if ibis.std() / ibis.mean() > MAX_IBI_CV:
+            ibi_cv = float(ibis.std() / ibis.mean())
+            if ibi_cv > MAX_IBI_CV:
                 reasons.append("irregular")
-        if hr_fft is not None and hr_peak is not None:
-            if purity < MIN_SPECTRAL_PURITY:
-                reasons.append("low_spectral_purity")
 
     return SignalQuality(ok=not reasons, reasons=reasons,
-                         spectral_purity=purity, peak_to_peak=p2p)
+                         spectral_purity=purity, peak_to_peak=p2p,
+                         clipped_frac=float(clipped), hr_peak=hr_peak, hr_fft=hr_fft,
+                         ibi_cv=ibi_cv)
 
 
 # ---------------------------------------------------------------------------
@@ -502,7 +559,7 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
 #     |                                     (+ "spectral purity" = how clean the rhythm is)
 #     |
 #     +--> assess_signal()                  flat? saturated? hr_peak vs hr_fft agree?
-#                                           IBIs regular? purity high?  => SignalQuality
+#                                           IBIs regular?  => SignalQuality
 #
 #   host_hr = hr_peak (shown on the GUI; the FFT value is only a cross-check)
 #

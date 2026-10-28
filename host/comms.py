@@ -130,7 +130,12 @@ class HostRecord:
     signal_ok : bool
         Signal validation verdict.
     signal_message : str
-        e.g. 'Signal OK' or 'Signal poor: flat (no finger?)'.
+        Full text: 'Signal OK', or 'Check sensor' / 'Reason: ...' / measured
+        value against its threshold, on three lines.
+    signal_status : str
+        Short form of signal_message (first two lines) for the HR status label.
+    signal_reasons : tuple of str
+        Failed-check codes, e.g. ('saturated',); empty when the signal is OK.
     latency_s : float
         Host processing time for this packet (s). End-to-end latency is this
         plus up to 1 s of buffering on the MCU plus Bluetooth transmission.
@@ -149,6 +154,8 @@ class HostRecord:
     signal_ok: bool
     signal_message: str
     latency_s: float
+    signal_status: str = ""
+    signal_reasons: tuple = ()
 
 
 class SequenceTracker:
@@ -587,6 +594,8 @@ class PPGLink:
             host_hr=result.host_hr, hr_fft=result.hr_fft,
             signal_ok=result.quality.ok, signal_message=result.quality.message(),
             latency_s=time.perf_counter() - t0,
+            signal_status=result.quality.status_lines(),
+            signal_reasons=tuple(result.quality.reasons),
         )
         if self.last_record is not None and rec.recording != self.last_record.recording:
             self._log("Recording started" if rec.recording else "Recording stopped")
@@ -654,7 +663,7 @@ def _console_monitor(port):
             for r in link.get_records():
                 f = lambda v: "   -  " if v is None else f"{v:6.1f}"
                 print(f"{r.seq:05d}  {f(r.mcu_hr)}   {f(r.host_hr)}   {f(r.hr_fft)}    "
-                      f"{int(r.recording)}   {r.signal_message}")
+                      f"{int(r.recording)}   {r.signal_message.replace(chr(10), ' | ')}")
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass

@@ -363,7 +363,9 @@ class SessionSummary:
         self.packet_count += 1
         self.good_packets += int(record.signal_ok)
         self.valid_samples = self.valid_samples + len(record.filtered) if record.signal_ok else 0
-        self.quality[record.signal_message] += 1
+        # Count each failed check on its own so combined faults don't split the tally.
+        for reason in record.signal_reasons or (record.signal_message,):
+            self.quality[reason] += 1
         if self.last_seq is not None and (record.seq - self.last_seq) % 65536 != 1:
             # Count sequence discontinuities, not the number of missing packets.
             self.gaps += 1
@@ -1441,7 +1443,7 @@ def create_gui():
             sg.Text(
                 "--",
                 key="-SIGNAL_QUALITY-",
-                size=(34, 2),
+                size=(34, 5),
                 background_color=PANEL
             )
         ],
@@ -1527,7 +1529,7 @@ def create_gui():
     value_sizes = {
         "-MCU_HR-": (10, 1), "-HOST_HR-": (10, 1),
         "-HR_DIFFERENCE-": (10, 1), "-FILTER_STATUS-": (24, 2),
-        "-LAST_PACKET-": (24, 1), "-SIGNAL_QUALITY-": (24, 3),
+        "-LAST_PACKET-": (24, 1), "-SIGNAL_QUALITY-": (24, 5),
         "-PULSE_COUNT-": (4, 1),
         "-AVERAGE_HR-": (9, 1), "-AMPLITUDE-": (16, 1),
     }
@@ -2010,7 +2012,7 @@ def main():
             # ------------------------------------------------
             # CURRENT HR + ALARM (Reqts 9, 10, 11)
             # ------------------------------------------------
-            show_hr(rec.host_hr, rec.signal_message, rec.signal_ok)
+            show_hr(rec.host_hr, rec.signal_status, rec.signal_ok)
 
             # ------------------------------------------------
             # KEEP ONLY THE MOST RECENT 60 s OF HR
@@ -2112,7 +2114,7 @@ def main():
                         f"HR limits updated: {low_hr_limit:.1f}-{high_hr_limit:.1f} BPM."
                     )
                     if latest_record is not None and not link.no_data_alarm:
-                        show_hr(current_hr, latest_record.signal_message,
+                        show_hr(current_hr, latest_record.signal_status,
                                 latest_record.signal_ok)
             except ValueError:
                 window["-HR_LIMIT_ERROR-"].update("Invalid HR limits")
