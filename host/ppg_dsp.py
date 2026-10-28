@@ -6,7 +6,7 @@ Takes the 50 raw PPG samples that arrive in each 1 s Bluetooth packet and produc
   - a host-calculated heart rate from adaptive-threshold beat detection,
   - an FFT-based heart rate used as an independent cross-check,
   - a signal-quality verdict (no finger / saturated / implausible HR / methods disagree),
-so the GUI can show "signal poor" instead of a nonsense heart rate.
+so the GUI can show "pulse signal poor" instead of a nonsense heart rate.
 
 Real-time processing is causal and keeps state between packets, so there are no
 edge artefacts at the 1 s packet boundaries. A zero-phase offline function is
@@ -72,7 +72,7 @@ FFT_NFFT = 2048          # zero-padded length (0.024 Hz / 1.5 BPM interpolation)
 FLAT_P2P_COUNTS = 20     # beat detector: window peak-to-peak below this = no pulse, no beats declared
 # Testing aid: when True, the beat-detector HR is still reported (host_hr) while the
 # signal is judged poor, so the GUI keeps showing HR and the trend. The quality
-# verdict (quality.ok / message) is unchanged and still says "Heart rate signal unreliable".
+# verdict (quality.ok / message) is unchanged and still says "Pulse signal poor".
 # Set False to withhold HR whenever the signal is not trustworthy (Reqt 10).
 SHOW_HR_WHEN_SIGNAL_POOR = True
 
@@ -81,8 +81,6 @@ SATURATION_FRAC = 0.20   # more than 20 % clipped samples = saturated
                          # (was 5 counts / 5 %: flagged real signals as saturated;
                          #  a genuinely railed sensor sits at the limit for far longer)
 HR_AGREE_BPM = 12.0      # peak HR and FFT HR must agree within this
-MIN_SPECTRAL_PURITY = 0.40  # fraction of band power near the dominant peak
-                            # (tested: real pulses >= 0.47, band-limited noise ~0.27)
 MAX_IBI_CV = 0.20        # max coefficient of variation of recent beat intervals
                          # (tested: real pulses <= 0.08, noise ~0.25)
 
@@ -101,7 +99,7 @@ class SignalQuality:
         True if no problems were found.
     reasons : list of str
         Short machine-readable codes, e.g. 'saturated', 'hr_out_of_range',
-        'hr_disagree', 'irregular', 'low_spectral_purity', 'no_beats', 'warming_up'.
+        'hr_disagree', 'irregular', 'no_beats', 'warming_up'.
     spectral_purity : float
         Fraction of 0.5-3.5 Hz power within +/-0.15 Hz of the dominant peak (0-1).
     peak_to_peak : float
@@ -109,9 +107,9 @@ class SignalQuality:
     clipped_frac : float
         Fraction of raw samples at the ADC rails (0-1).
     hr_peak, hr_fft : float or None
-        The two heart-rate estimates compared by the quality check (BPM).
+        The two pulse-rate estimates compared by the agreement check (BPM).
     ibi_cv : float or None
-        Coefficient of variation of the recent beat intervals.
+        Coefficient of variation of the recent beat intervals (None if too few).
 
     Author: Bianca Dibden
     """
@@ -124,56 +122,88 @@ class SignalQuality:
     hr_fft: float = None
     ibi_cv: float = None
 
-    def threshold_lines(self):
-        """
-        Measured value vs. threshold for each FAILED check only (Researcher tab).
+    # Short label for each reason code, in priority order (first = shown as the reason).
+    REASON_LABELS = {
+        "saturated": "saturated",
+        "no_beats": "no beats",
+        "hr_out_of_range": "HR out of range",
+        "hr_disagree": "HR methods disagree",
+        "irregular": "irregular beats",
+    }
 
-        Returns
-        -------
-        list of str
-            One line per failed reason; empty when the signal is OK.
-
-        Author: Bianca Dibden
+    def detail(self, reason):
         """
-        fmt = lambda v: "--" if v is None else f"{v:.1f}"
-        lines = []
-        for r in self.reasons:
-            if r == "saturated":
-                lines.append(f"Clipped samples: {self.clipped_frac:.0%} (limit {SATURATION_FRAC:.0%})")
-            elif r == "hr_out_of_range":
-                lines.append(f"Peak HR: {fmt(self.hr_peak)} BPM (allowed {HR_MIN_BPM}-{HR_MAX_BPM})")
-            elif r == "hr_disagree":
-                lines.append(f"Peak HR {fmt(self.hr_peak)} vs FFT HR {fmt(self.hr_fft)} BPM "
-                             f"(max difference {HR_AGREE_BPM:.0f})")
-            elif r == "irregular":
-                lines.append(f"Beat interval variation: {fmt(self.ibi_cv)} (limit {MAX_IBI_CV})")
-            elif r == "low_spectral_purity":
-                lines.append(f"Spectral purity: {self.spectral_purity:.2f} (min {MIN_SPECTRAL_PURITY})")
-        return lines
+        Measured value against its threshold for one reason code.
 
-    def message(self):
-        """
-        Human-readable summary for the GUI / system log.
+        Wording is deliberately about the pulse signal (not "signal quality" or
+        "signal strength", which could be mistaken for the Bluetooth link) and
+        hedges the likely cause rather than asserting it.
 
         Returns
         -------
         str
-            e.g. 'Signal OK' or 'Heart rate signal unreliable: saturated (too much pressure/light)'.
+            e.g. 'Clipped samples 34% (max 20%)'.
+
+        Author: Bianca Dibden
+        """
+        if reason == "saturated":
+            return f"Clipped samples {self.clipped_frac * 100:.0f}% (max {SATURATION_FRAC * 100:.0f}%)"
+        if reason == "no_beats":
+            return "No pulse peaks found in the current window"
+        if reason == "hr_out_of_range":
+            return f"HR {self.hr_peak:.0f} bpm (allowed {HR_MIN_BPM:.0f}-{HR_MAX_BPM:.0f})"
+        if reason == "hr_disagree":
+            return (f"Peak HR {self.hr_peak:.0f} vs FFT HR {self.hr_fft:.0f} bpm "
+                    f"(max diff {HR_AGREE_BPM:.0f})")
+        if reason == "irregular":
+            return f"Beat timing spread {self.ibi_cv * 100:.0f}% (max {MAX_IBI_CV * 100:.0f}%)"
+        return reason
+
+    def status_lines(self, show_all=False):
+        """
+        The two-line status: headline and reason (no detail line).
+
+        Parameters
+        ----------
+        show_all : bool
+            List every failed reason instead of the first plus '(+N more)'
+            (used by the Researcher tab; the HR status label stays short).
+
+        Returns
+        -------
+        str
+            'Pulse signal good', 'Acquiring pulse signal' or
+            'Check sensor\nReason: saturated (+1 more)'.
 
         Author: Bianca Dibden
         """
         if self.ok:
-            return "Signal OK"
-        text = {
-            "saturated": "saturated (too much pressure/light)",
-            "hr_out_of_range": "pulse rate out of range",
-            "hr_disagree": "pulse methods disagree (motion?)",
-            "low_spectral_purity": "no clear pulse rhythm",
-            "irregular": "irregular beat intervals (motion/noise?)",
-            "warming_up": "acquiring signal",
-            "no_beats": "no beats detected",
-        }
-        return "Heart rate signal unreliable: " + ", ".join(text.get(r, r) for r in self.reasons)
+            return "Pulse signal good"
+        if "warming_up" in self.reasons:
+            return "Acquiring pulse signal"
+        labels = [self.REASON_LABELS.get(r, r) for r in self.reasons]
+        if show_all:
+            return "Check sensor\nReason: " + ", ".join(labels)
+        more = f" (+{len(labels) - 1} more)" if len(labels) > 1 else ""
+        return f"Check sensor\nReason: {labels[0]}{more}"
+
+    def message(self):
+        """
+        Full human-readable summary for the GUI / system log.
+
+        Returns
+        -------
+        str
+            'Pulse signal good', 'Acquiring pulse signal', or three lines: 'Check sensor',
+            'Reason: saturated, irregular beats' (every failed check) and the
+            measured-vs-threshold detail for each, joined with '; '.
+
+        Author: Bianca Dibden
+        """
+        text = self.status_lines(show_all=True)
+        if self.ok or "warming_up" in self.reasons:
+            return text
+        return text + "\n" + "; ".join(self.detail(r) for r in self.reasons)
 
 
 @dataclass
@@ -465,7 +495,6 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
       irregular   - coefficient of variation (std/mean) of the recent beat
                     intervals > MAX_IBI_CV. Noise produces random intervals;
                     a real pulse is nearly periodic over a few beats.
-      low_spectral_purity - purity < MIN_SPECTRAL_PURITY
 
     Parameters
     ----------
@@ -490,7 +519,7 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
     filtered = np.asarray(filtered, dtype=float)
     p2p = float(np.ptp(filtered[-FS * 3:])) if len(filtered) else 0.0
     reasons = []
-    hr_ibi_cv = None
+    ibi_cv = None
 
     clipped = np.mean((raw <= SATURATION_MARGIN) | (raw >= ADC_MAX - SATURATION_MARGIN))
     if clipped > SATURATION_FRAC:
@@ -507,17 +536,14 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
                 reasons.append("hr_disagree")
         if ibis is not None and len(ibis) >= 3:
             ibis = np.asarray(ibis, dtype=float)
-            hr_ibi_cv = float(ibis.std() / ibis.mean())
-            if hr_ibi_cv > MAX_IBI_CV:
+            ibi_cv = float(ibis.std() / ibis.mean())
+            if ibi_cv > MAX_IBI_CV:
                 reasons.append("irregular")
-        if hr_fft is not None and hr_peak is not None:
-            if purity < MIN_SPECTRAL_PURITY:
-                reasons.append("low_spectral_purity")
 
     return SignalQuality(ok=not reasons, reasons=reasons,
                          spectral_purity=purity, peak_to_peak=p2p,
                          clipped_frac=float(clipped), hr_peak=hr_peak, hr_fft=hr_fft,
-                         ibi_cv=hr_ibi_cv)
+                         ibi_cv=ibi_cv)
 
 
 # ---------------------------------------------------------------------------
@@ -539,7 +565,7 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
 #     |                                     (+ "spectral purity" = how clean the rhythm is)
 #     |
 #     +--> assess_signal()                  saturated? hr_peak vs hr_fft agree?
-#                                           IBIs regular? purity high?  => SignalQuality
+#                                           IBIs regular?  => SignalQuality
 #
 #   host_hr = hr_peak (shown on the GUI; the FFT value is only a cross-check)
 #
