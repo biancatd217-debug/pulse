@@ -6,7 +6,7 @@ Takes the 50 raw PPG samples that arrive in each 1 s Bluetooth packet and produc
   - a host-calculated heart rate from adaptive-threshold beat detection,
   - an FFT-based heart rate used as an independent cross-check,
   - a signal-quality verdict (no finger / saturated / implausible HR / methods disagree),
-so the GUI can show "signal poor" instead of a nonsense heart rate.
+so the GUI can show "pulse signal poor" instead of a nonsense heart rate.
 
 Real-time processing is causal and keeps state between packets, so there are no
 edge artefacts at the 1 s packet boundaries. A zero-phase offline function is
@@ -72,7 +72,7 @@ FFT_NFFT = 2048          # zero-padded length (0.024 Hz / 1.5 BPM interpolation)
 FLAT_P2P_COUNTS = 20     # filtered peak-to-peak below this = no finger / no pulse
 # Testing aid: when True, the beat-detector HR is still reported (host_hr) while the
 # signal is judged poor, so the GUI keeps showing HR and the trend. The quality
-# verdict (quality.ok / message) is unchanged and still says "Signal poor".
+# verdict (quality.ok / message) is unchanged and still says "Pulse signal poor".
 # Set False to withhold HR whenever the signal is not trustworthy (Reqt 10).
 SHOW_HR_WHEN_SIGNAL_POOR = True
 
@@ -118,26 +118,33 @@ class SignalQuality:
         """
         Human-readable summary for the GUI / system log.
 
+        Wording is deliberately about the pulse signal (not "signal quality" or
+        "signal strength", which could be mistaken for the Bluetooth link) and
+        hedges the likely cause rather than asserting it.
+
         Returns
         -------
         str
-            e.g. 'Signal OK' or 'Signal poor: flat (no finger?)'.
+            e.g. 'Pulse signal good' or
+            'Pulse signal poor: no pulse waveform detected (check sensor contact)'.
 
         Author: Bianca Dibden
         """
         if self.ok:
-            return "Signal OK"
+            return "Pulse signal good"
+        if self.reasons == ["warming_up"]:
+            return "Acquiring pulse signal"
         text = {
-            "flat": "flat (no finger?)",
-            "saturated": "saturated (too much pressure/light)",
-            "hr_out_of_range": "pulse rate out of range",
-            "hr_disagree": "pulse methods disagree (motion?)",
+            "flat": "no pulse waveform detected (check sensor contact)",
+            "saturated": "sensor reading at its limit (check contact pressure or ambient light)",
+            "hr_out_of_range": "pulse rate outside the expected range",
+            "hr_disagree": "pulse estimates disagree (movement or noise possible)",
             "low_spectral_purity": "no clear pulse rhythm",
-            "irregular": "irregular beat intervals (motion/noise?)",
+            "irregular": "irregular beat timing (movement or noise possible)",
             "warming_up": "acquiring signal",
-            "no_beats": "no beats detected",
+            "no_beats": "no beats detected yet",
         }
-        return "Signal poor: " + ", ".join(text.get(r, r) for r in self.reasons)
+        return "Pulse signal poor: " + "; ".join(text.get(r, r) for r in self.reasons)
 
 
 @dataclass
