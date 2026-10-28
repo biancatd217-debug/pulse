@@ -695,8 +695,14 @@ def update_communication_display(window, communication, link):
         window["-CURRENT_HR-"].update("--.-", text_color=TEXT_MUTED)
         message = "DEVICE DISCONNECTED" if not connected else "NO DATA - CHECK DEVICE"
         window["-HR_STATUS-"].update(message, text_color=RED)
-        window["-PULSE_SIGNAL_STATE-"].update("\u25cf NO DATA", text_color=TEXT_MUTED)
-        window["-PULSE_SIGNAL_DETAIL-"].update("Waiting for pulse data", text_color=TEXT_MUTED)
+        # Same wording as ppg_dsp.SignalQuality.message(): "Pulse signal ..." (never "signal quality").
+        if not connected:
+            pulse_state, pulse_detail = "\u25cf NO DEVICE", "Device disconnected - no pulse signal"
+        else:
+            pulse_state, pulse_detail = "\u25cf NO DATA", "No pulse data received - check the device"
+        window["-PULSE_SIGNAL_STATE-"].update(pulse_state, text_color=TEXT_MUTED)
+        window["-PULSE_SIGNAL_DETAIL-"].update(pulse_detail, text_color=TEXT_MUTED)
+        window["-SIGNAL_QUALITY-"].update("Pulse signal unavailable (no data)", text_color=TEXT_MUTED)
 
     # Skip unchanged text; the seconds count only matters while the alarm is active.
     silent_s = int(link.seconds_since_packet) if alarm else 0

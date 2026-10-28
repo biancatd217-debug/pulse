@@ -156,7 +156,7 @@ uint32_t last_lcd_update_time_ms = 0; // Time of the previous LCD update.
 bool is_recording_active = false; // Whether recording is currently active.
 bool is_button_hold_action_triggered = false; // Prevents one continuous long press from repeatedly triggering the hold action.
 uint32_t button_press_start_time_ms = 0; // Time at which the current button press began.
-bool is_buzzer_enabled = false; // Whether the buzzer is permitted to sound. Muted for now (LCD shows !); hold the button 3 s to enable.
+bool is_buzzer_enabled = true; //  Whether the buzzer is permitted to sound.
 bool is_buzzer_currently_on = false; // Whether the buzzer output is currently active.
 
 // ---------------- FILTER AND THRESHOLD SETTINGS ----------------
@@ -691,7 +691,7 @@ void startup_sequence() {
   digitalWrite(BLUE_LED_PIN, HIGH);
   const uint16_t notes[5] = {1047, 1319, 1568, 2093, 2637};
   for (uint8_t i = 0; i < 5; i++) {
-    if (is_buzzer_enabled) tone(BUZZER_PIN, notes[i]);  // Silent while muted.
+    tone(BUZZER_PIN, notes[i]);
     delay(100);
     noTone(BUZZER_PIN);
     delay(100);
