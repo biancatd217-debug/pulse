@@ -36,6 +36,38 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from comms import PPGLink, STATUS_CONNECTED, STATUS_CONNECTING, MAX_FORWARD_GAP
 from packet_format import SAMPLES_PER_PACKET, SEQ_MODULO
+
+# ============================================================
+# HOW THIS FILE IS ORGANISED (read this first)
+# ============================================================
+# DATA FLOW
+#   MCU / simulator --> comms.py PPGLink (background thread: validates packets,
+#   runs ppg_dsp.py filtering + Host HR) --> queue of HostRecord objects
+#   --> main() event loop below (polls the queue every 50 ms) --> plots,
+#   labels, CSV file and PDF report.
+#
+# A HostRecord (one packet, normally 50 samples = 1 s) holds:
+#   seq, time, raw[], filtered[], mcu_hr, host_hr, signal_ok, signal_message,
+#   recording (button flag from the MCU), latency_s.
+#
+# KEY COMPONENTS (top to bottom)
+#   1. Constants            colours, 50 Hz sample rate, display windows, HR limits
+#   2. add_plot()           builds one themed Matplotlib figure inside a Tk canvas
+#   3. Researcher analysis  FFT, spectrogram, 2nd derivative (display only)
+#   4. Gap detection        display_packet_gap() decides if data was lost
+#   5. SessionSummary +     collects stats while recording, then a background
+#      generate_session_pdf thread writes the PDF report from the saved CSV
+#   6. Log / comms display  system log (Reqt 13), Bluetooth status (Reqt 14)
+#   7. CSV recording        start_recording / save_packet / stop_recording
+#   8. HR status            colours + text for low / normal / high HR
+#   9. Layout helpers       configure_*() set up resizing after the window exists
+#  10. create_gui()         defines every widget (Monitor tab + Researcher tab)
+#  11. Display helpers      legend styling, y-axis autoscale, update_hr_display()
+#  12. main()               creates plots + PPGLink, then runs the event loop
+#
+# NAMING CONVENTION: every widget has a key like "-CURRENT_HR-"; the code reads
+# or changes it with window["-CURRENT_HR-"].update(...).
+
 # ============================================================
 # GUI COLOURS AND FONTS
 # ============================================================
@@ -90,7 +122,13 @@ GUI_POLL_MS = 50
 # ============================================================
 
 def add_plot(canvas_element, figsize):
-    """Create a themed Matplotlib figure and embed it in a GUI canvas."""
+    """Create a themed Matplotlib figure and embed it in a GUI canvas.
+
+    FreeSimpleGUI has no native plotting, so each graph is a sg.Canvas
+    placeholder; this function puts a Matplotlib figure inside it.
+    Returns (figure, axes, canvas_agg). Later code updates the line data and
+    calls canvas_agg.draw() to refresh the picture.
+    """
 
     fig = Figure(figsize=figsize)
     ax = fig.add_subplot(111)
@@ -200,11 +238,14 @@ def display_packet_gap(previous, record, interrupted=False, timeout=5.0):
 class ResearcherAnalysis:
     """Keep up to 10 s of filtered samples, clearing history after detected interruptions."""
     def __init__(self):
+        # deque(maxlen) automatically discards the oldest sample when full (500 samples = 10 s).
         self.samples = deque(maxlen=10 * SAMPLE_RATE)
         self.last_seq = None
         self.valid_samples = 0
 
     def append(self, record, interrupted=False):
+        # Called once per packet. A sequence jump or reconnect restarts the history so
+        # the FFT/spectrogram never join samples from either side of a gap.
         if interrupted or (self.last_seq is not None and (record.seq - self.last_seq) % 65536 != 1):
             self.samples.clear()
             self.valid_samples = 0
@@ -250,7 +291,11 @@ def bind_researcher_mapping(canvas):
 
 
 def create_researcher_plots(window):
-    """Create the Researcher figures and plot objects once, ready for live updates."""
+    """Create the Researcher figures and plot objects once, ready for live updates.
+
+    Plots are built once and only their data is replaced afterwards
+    (set_data), which is much faster than redrawing from scratch each second.
+    """
     result = {}
     specs = (
         ('fft', '-FFT_CANVAS-', 'Frequency Spectrum (Last 10 s)', 'Frequency (Hz)', 'Spectral Amplitude (ADC counts)'),
@@ -340,7 +385,12 @@ def update_researcher_plots(plots, analysis):
 # ============================================================
 
 class SessionSummary:
-    """Collect recording metadata: saved packets, signal quality, HR limits and observed alarms."""
+    """Collect recording metadata: saved packets, signal quality, HR limits and observed alarms.
+
+    One instance exists per recording. main() feeds it every saved packet
+    (observe), alarm transition (alarm) and limit change (change_limits); the
+    PDF generator then prints these totals on the report.
+    """
     def __init__(self, filename, low, high):
         self.filename = filename
         self.samples = 0
@@ -386,6 +436,11 @@ def generate_session_pdf(session):
     """Read the closed CSV and render a session summary using separate report figures.
 
     Runs in a background worker without updating live GUI widgets or reprocessing Host HR.
+
+    Steps: (1) load the CSV columns into arrays, (2) take one HR value per packet
+    (every 50th row), (3) page 1 = HR statistics + alarms + HR trend,
+    (4) page 2 = last 10 s of PPG + its spectrum, (5) optional metadata pages,
+    (6) write to a .tmp file and rename, so a crash never leaves a broken PDF.
     """
     # Read the completed recording; do not recalculate filtering or Host HR for the report.
     with open(session.filename, newline='') as source:
@@ -555,7 +610,11 @@ def generate_session_pdf(session):
 
 
 class SessionReports:
-    """Run PDF jobs in the background and report completion through the GUI thread."""
+    """Run PDF jobs in the background and report completion through the GUI thread.
+
+    Building a PDF takes a moment, so it runs on a worker thread to keep the GUI
+    responsive; main() calls poll() every loop to log the result when it finishes.
+    """
     def __init__(self):
         # Generate one report at a time, using separate figures from the live GUI.
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='LumiPulsePDF')
@@ -720,7 +779,10 @@ def update_hr_status(
     low_limit,
     high_limit
 ):
-    """Colour the Host HR display and status according to the active low/high limits."""
+    """Colour the Host HR display and status according to the active low/high limits.
+
+    Red = outside limits (alarm), green = within limits.
+    """
 
     if heart_rate < low_limit:
         window["-HR_STATUS-"].update(
@@ -752,6 +814,10 @@ def update_hr_status(
 # ============================================================
 # GUI LAYOUT AND RESIZING
 # ============================================================
+# FreeSimpleGUI stacks every layout row with Tk's "pack". These configure_*()
+# functions run AFTER the window exists and re-arrange the Tk widgets into
+# grids with fixed proportions, so panels and fonts scale when the window is
+# resized. They are cosmetic: no data handling happens here.
 
 def configure_monitor_grid(window):
     """Allocate the Monitor layout once; Tk handles later changes in window size.
@@ -977,7 +1043,14 @@ def fit_initial_window(window):
 # GUI CONSTRUCTION
 # ============================================================
 def create_gui():
-    """Build both tabs, finalise the widgets and configure their layout and resizing."""
+    """Build both tabs, finalise the widgets and configure their layout and resizing.
+
+    Layout is a list of rows; each row is a list of elements. The pattern used
+    throughout: define each panel's layout, wrap it in an sg.Frame, then combine
+    the frames into the Monitor and Researcher tabs inside one sg.Window.
+      Monitor tab:    HR trend, Host HR + limits, live PPG, session info, system log
+      Researcher tab: MCU-vs-Host HR, FFT, spectrogram, 2nd derivative, info sidebar
+    """
 
     sg.theme("DarkGrey13")
     sg.set_options(
@@ -1702,6 +1775,18 @@ def update_hr_display(window, host_hr, signal_message, low_limit, high_limit,
 # ============================================================
 
 # Run the GUI event loop: receive records, update displays and manage recording.
+# Structure of main():
+#   A. Setup      build window, create the four live plots and their data buffers
+#   B. State      HR limits, recording variables, helper closures
+#                 (set_recording, show_hr)
+#   C. Start comms  create PPGLink and start its background thread
+#   D. Loop (every ~50 ms):
+#        1. read GUI events          2. log messages from comms.py
+#        3. pull new packets (HostRecords) and buffer/record them
+#        4. if there were new packets: redraw plots + update labels
+#        5. update Researcher plots (max 1x/s), Bluetooth status, session timer
+#        6. handle button/radio events (Apply Limits, Raw/Filtered/Both)
+#   E. Shutdown   stop comms, close any open recording, wait for PDFs
 def main():
     # Select a real serial port via argv, e.g. lp_gui.py COM5.
     # With no argument the built-in ESP32 simulator is used.
@@ -1718,6 +1803,9 @@ def main():
         figsize=(7.0, 2.25)
     )
 
+    # The PPG plot is a fixed-length scrolling window: a 500-sample array whose x-axis
+    # runs from -10 s (oldest) to 0 s (newest). Each packet shifts the array left
+    # (np.roll) and writes the new samples at the right-hand end.
     # Keep newest samples on the right; the time slots assume the nominal 50 Hz sample rate.
     ppg_time = np.linspace(-PPG_DISPLAY_SECONDS, 0, PPG_BUFFER_SIZE)
 
@@ -1756,6 +1844,8 @@ def main():
         figsize=(7.0, 2.2)
     )
 
+    # Three parallel lists, one entry per packet: GUI time, Host HR, MCU HR.
+    # Entries older than 60 s are trimmed in the main loop; NaN draws as a gap.
     hr_times = []
     hr_values = []
     mcu_hr_values = []
@@ -1891,6 +1981,8 @@ def main():
     else:
         add_log(window, f"Opening Bluetooth port {port}.")
 
+    # PPGLink does all serial/Bluetooth I/O on its own thread. The GUI never touches the
+    # port: it only asks the link for events/records and for its connection status.
     link = PPGLink(port)
     # Queue the initial limits; PPGLink sends and repeats them in its background thread.
     link.set_limits(low_hr_limit, high_hr_limit)   # ESP32 alarm uses the GUI limits
@@ -1934,6 +2026,8 @@ def main():
         records = link.get_records()
 
         for record in records:
+            # Per-packet pipeline: (1) note packet arrival, (2) start/stop/save the CSV,
+            # (3) detect data gaps, (4) shift the PPG buffers, (5) append to HR history.
             register_valid_packet(window, record)
 
             # Recording state from the ESP32 button
@@ -1982,6 +2076,8 @@ def main():
 
             latest_record = record
 
+        # Everything below runs only when new packets arrived, i.e. about once per second.
+        # Only the newest record's values are shown on the labels.
         if records:
             # A reconnect cannot be placed precisely within a queued batch.
             # Separate its records to avoid joining uncertain data, then resume normal history.
