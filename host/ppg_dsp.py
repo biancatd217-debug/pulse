@@ -158,9 +158,15 @@ class SignalQuality:
             return f"Beat timing spread {self.ibi_cv * 100:.0f}% (max {MAX_IBI_CV * 100:.0f}%)"
         return reason
 
-    def status_lines(self):
+    def status_lines(self, show_all=False):
         """
         The two-line status: headline and reason (no detail line).
+
+        Parameters
+        ----------
+        show_all : bool
+            List every failed reason instead of the first plus '(+N more)'
+            (used by the Researcher tab; the HR status label stays short).
 
         Returns
         -------
@@ -174,9 +180,11 @@ class SignalQuality:
             return "Signal OK"
         if "warming_up" in self.reasons:
             return "Acquiring signal..."
-        reason = self.REASON_LABELS.get(self.reasons[0], self.reasons[0])
-        more = f" (+{len(self.reasons) - 1} more)" if len(self.reasons) > 1 else ""
-        return f"Check sensor\nReason: {reason}{more}"
+        labels = [self.REASON_LABELS.get(r, r) for r in self.reasons]
+        if show_all:
+            return "Check sensor\nReason: " + ", ".join(labels)
+        more = f" (+{len(labels) - 1} more)" if len(labels) > 1 else ""
+        return f"Check sensor\nReason: {labels[0]}{more}"
 
     def message(self):
         """
@@ -186,12 +194,12 @@ class SignalQuality:
         -------
         str
             'Signal OK', 'Acquiring signal...', or three lines: 'Check sensor',
-            'Reason: saturated (+1 more)' and the measured-vs-threshold detail
-            for every failed check, joined with '; '.
+            'Reason: saturated, irregular beats' (every failed check) and the
+            measured-vs-threshold detail for each, joined with '; '.
 
         Author: Bianca Dibden
         """
-        text = self.status_lines()
+        text = self.status_lines(show_all=True)
         if self.ok or "warming_up" in self.reasons:
             return text
         return text + "\n" + "; ".join(self.detail(r) for r in self.reasons)
