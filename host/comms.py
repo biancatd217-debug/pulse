@@ -130,7 +130,7 @@ class HostRecord:
     signal_ok : bool
         Signal validation verdict.
     signal_message : str
-        e.g. 'Signal OK' or 'Signal poor: flat (no finger?)'.
+        e.g. 'Pulse signal good' or 'Pulse signal poor: no clear pulse rhythm'.
     latency_s : float
         Host processing time for this packet (s). End-to-end latency is this
         plus up to 1 s of buffering on the MCU plus Bluetooth transmission.
@@ -246,7 +246,7 @@ class PPGLink:
         self.port = port
         self.baudrate = baudrate
         if serial_factory is None and port in ("SIM", "SIM_QUALITY"):
-            from packet_sim import SimulatedDevice
+            from sim_packet import SimulatedDevice
             if port == "SIM_QUALITY":
                 # Scripted faults (no finger, saturation, noise, motion...) so the
                 # signal-quality display can be seen working; see sim_quality_data.py.
