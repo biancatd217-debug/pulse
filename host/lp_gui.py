@@ -1259,7 +1259,7 @@ def create_gui():
                             "\u25cf WAITING",
                             key="-PULSE_SIGNAL_STATE-",
                             font=("Helvetica", 12, "bold"),
-                            size=(14, 1),
+                            size=(20, 1),  # wide enough for "● CHECK SENSOR" in bold
                             text_color=TEXT_MUTED,
                             background_color=PANEL
                         )
@@ -1269,7 +1269,7 @@ def create_gui():
                             "Waiting for pulse data",
                             key="-PULSE_SIGNAL_DETAIL-",
                             font=FONT_SMALL,
-                            size=(34, 3),
+                            size=(34, 4),  # up to 4 wrapped lines for long "check sensor" reasons
                             text_color=TEXT_MUTED,
                             background_color=PANEL
                         )
@@ -1609,19 +1609,6 @@ def create_gui():
                 key="-PULSE_COUNT-",
                 background_color=PANEL
             )
-        ],
-        [
-            sg.Text(
-                "Average HR:",
-                size=(18, 1),
-                text_color=TEXT_MUTED,
-                background_color=PANEL
-            ),
-            sg.Text(
-                "--.- BPM",
-                key="-AVERAGE_HR-",
-                background_color=PANEL
-            )
         ]
     ]
 
@@ -1629,10 +1616,8 @@ def create_gui():
     # The original pulse-count row is not displayed.
     researcher_hr_layout[0][0].DisplayText = "HEART RATE"
     signal_analysis_layout[0][0].DisplayText = "SIGNAL SUMMARY"
-    signal_analysis_layout[3][0].DisplayText = "Average Host HR:"
     quality_row = signal_analysis_layout[1]
     quality_value = quality_row[1]
-    average_row = signal_analysis_layout[3]
     pulse_value = sg.Text("--", key="-PULSE_COUNT-", visible=False)
 
     # Keep hidden elements so existing packet/status updates still find their keys.
@@ -1669,19 +1654,31 @@ def create_gui():
             tab_background_color=BG, expand_x=True, expand_y=True, pad=(2, 2))],
         [filter_value, last_packet_value, pulse_value]
     ]
+    # Average Host HR and PPG amplitude each get a small tile (label / value / unit),
+    # shown side by side under the pulse-signal text. Tile text is fixed-size so
+    # live updates never resize the panel.
+    def summary_tile(label, key, unit):
+        return sg.Frame("", [
+            [sg.Text(label, size=(13, 1), font=FONT_SMALL, text_color=TEXT_MUTED,
+                     background_color=BG, pad=(4, 2))],
+            [sg.Text("--", key=key, size=(7, 1), font=FONT_VALUE, text_color=TEXT,
+                     background_color=BG, pad=(4, 0))],
+            [sg.Text(unit, size=(13, 1), text_color=TEXT_MUTED,
+                     background_color=BG, pad=(4, 2))],
+        ], background_color=BG, border_width=1, expand_x=True, pad=(2, 4))
+
     signal_analysis_layout = [
         signal_analysis_layout[0],
-        [quality_row[0]], [quality_value], average_row,
-        [sg.Text("PPG amplitude (P-P):", text_color=TEXT_MUTED, background_color=PANEL)],
-        [sg.Text("--", key="-AMPLITUDE-", background_color=PANEL)],
+        [quality_row[0]], [quality_value],
+        [summary_tile("Avg Host HR", "-AVERAGE_HR-", "BPM"),
+         summary_tile("PPG amplitude", "-AMPLITUDE-", "ADC counts (P-P)")],
     ]
     # Reserve space for changing values so live updates do not move the panels.
     value_sizes = {
         "-MCU_HR-": (10, 1), "-HOST_HR-": (10, 1),
         "-HR_DIFFERENCE-": (10, 1), "-FILTER_STATUS-": (24, 2),
-        "-LAST_PACKET-": (24, 1), "-SIGNAL_QUALITY-": (24, 3),
+        "-LAST_PACKET-": (24, 1), "-SIGNAL_QUALITY-": (26, 5),
         "-PULSE_COUNT-": (4, 1),
-        "-AVERAGE_HR-": (9, 1), "-AMPLITUDE-": (16, 1),
     }
     for panel_layout in (researcher_hr_layout, processing_layout, signal_analysis_layout):
         for row in panel_layout:
@@ -2255,12 +2252,12 @@ def main():
             )
             window["-PULSE_COUNT-"].update("--")
             amplitude = researcher.amplitude()
-            window["-AMPLITUDE-"].update("--" if amplitude is None else f"{amplitude:.1f} ADC counts")
+            window["-AMPLITUDE-"].update("--" if amplitude is None else f"{amplitude:.1f}")
 
             # Average available Host HR in the rolling history, not the whole recording session.
             valid_hr = [v for v in hr_values if np.isfinite(v)]
             window["-AVERAGE_HR-"].update(
-                f"{np.mean(valid_hr):.1f} BPM" if valid_hr else "--"
+                f"{np.mean(valid_hr):.1f}" if valid_hr else "--"
             )
 
         # Refresh dirty Researcher analysis no more often than once per second.
