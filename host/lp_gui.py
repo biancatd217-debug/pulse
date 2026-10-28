@@ -679,37 +679,57 @@ def register_valid_packet(window, record):
 
 
 def update_communication_display(window, communication, link):
-    """Display Bluetooth status and the no-data alarm supplied by PPGLink (Reqt 14).
+    """Show link state and the no-data alarm separately (Reqt 14).
 
-    Clear stale Host HR on every alarmed poll; update connection/banner text only on changes.
+    Link state (BT status): CONNECTED / DISCONNECTED - RECONNECTING / DISCONNECTED.
+    Data state (red banner): DEVICE DISCONNECTED, or NO DATA FOR n s while the
+    link is open but no valid packet has arrived for 5 s or more.
+    Host HR is cleared whenever the link is down or the alarm is active.
     Author: Bianca Dibden (integration)
     """
-    # Never leave a stale HR on screen while there is no data.
-    # Fresh data resumes the HR display after the no-data alarm clears.
-    if link.no_data_alarm:
+    connected = link.status == STATUS_CONNECTED
+    alarm = link.no_data_alarm      # derived from the clock: read once per poll
+    # Never leave a stale HR on screen while there is no link or no data.
+    # Fresh data resumes the HR display once the link is back and the alarm clears.
+    if not connected or alarm:
         window["-CURRENT_HR-"].update("--.-", text_color=TEXT_MUTED)
-        window["-HR_STATUS-"].update("NO DATA - CHECK CONNECTION", text_color=RED)
-        window["-PULSE_SIGNAL_STATE-"].update("\u25cf NO DATA", text_color=TEXT_MUTED)
-        window["-PULSE_SIGNAL_DETAIL-"].update("Waiting for pulse data", text_color=TEXT_MUTED)
+        message = "DEVICE DISCONNECTED" if not connected else "NO DATA - CHECK DEVICE"
+        window["-HR_STATUS-"].update(message, text_color=RED)
+        # Same "Pulse signal ..." wording as ppg_dsp.SignalQuality.message().
+        if not connected:
+            pulse_state, pulse_detail = "\u25cf NO DEVICE", "Device disconnected - no pulse signal"
+        else:
+            pulse_state, pulse_detail = "\u25cf NO DATA", "No pulse data received - check the device"
+        window["-PULSE_SIGNAL_STATE-"].update(pulse_state, text_color=TEXT_MUTED)
+        window["-PULSE_SIGNAL_DETAIL-"].update(pulse_detail, text_color=TEXT_MUTED)
+        window["-SIGNAL_QUALITY-"].update("Pulse signal unavailable (no data)", text_color=TEXT_MUTED)
 
-    # Skip unchanged banner/status text, but always clear HR while the no-data alarm is active.
-    state = (link.status, link.no_data_alarm)
+    # Skip unchanged text; the seconds count only matters while the alarm is active.
+    silent_s = int(link.seconds_since_packet) if alarm else 0
+    state = (link.status, alarm, silent_s)
     if state == communication["shown"]:
         return
     communication["shown"] = state
 
-    if link.status == STATUS_CONNECTED and not link.no_data_alarm:
-        window["-BT_STATUS-"].update("● CONNECTED", text_color=GREEN)
-    elif link.status == STATUS_CONNECTED:
-        window["-BT_STATUS-"].update("● CONNECTED - NO DATA", text_color=AMBER)
+    if connected and not alarm:
+        window["-BT_STATUS-"].update("\u25cf CONNECTED", text_color=GREEN)
+    elif connected:
+        window["-BT_STATUS-"].update("\u25cf CONNECTED - NO DATA", text_color=AMBER)
     elif link.status == STATUS_CONNECTING:
-        window["-BT_STATUS-"].update("● CONNECTING...", text_color=AMBER)
+        # A connect attempt can block for 10+ s on a dead Bluetooth port.
+        window["-BT_STATUS-"].update("\u25cf DISCONNECTED - RECONNECTING...", text_color=AMBER)
     else:
-        window["-BT_STATUS-"].update("● DISCONNECTED", text_color=RED)
+        window["-BT_STATUS-"].update("\u25cf DISCONNECTED", text_color=RED)
 
-    window["-COMM_ALARM-"].update(
-        "⚠ NO DATA FOR 5 s" if link.no_data_alarm else ""
-    )
+    if not connected:
+        banner = "\u26a0 DEVICE DISCONNECTED"
+        if alarm:
+            banner += f" - NO DATA FOR {silent_s} s"
+    elif alarm:
+        banner = f"\u26a0 NO DATA FOR {silent_s} s (link open)"
+    else:
+        banner = ""
+    window["-COMM_ALARM-"].update(banner)
 
 # ============================================================
 # CSV RECORDING
