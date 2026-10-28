@@ -111,7 +111,7 @@ uint32_t lastLcdTime = 0;
 bool recording = false;
 bool holdUsed = false;
 uint32_t pressStart = 0;
-bool buzzerEnabled = true;
+bool buzzerEnabled = false;  // Muted for now (LCD shows !); hold the button 3 s to enable.
 bool buzzerOn = false;
 
 // ---------------- FILTER AND THRESHOLD DATA ----------------
@@ -538,7 +538,7 @@ void startupSequence() {
   digitalWrite(BLUE_LED_PIN, HIGH);
   const uint16_t notes[5] = {1047, 1319, 1568, 2093, 2637};
   for (uint8_t i = 0; i < 5; i++) {
-    tone(BUZZER_PIN, notes[i]);
+    if (buzzerEnabled) tone(BUZZER_PIN, notes[i]);  // Silent while muted.
     delay(100);
     noTone(BUZZER_PIN);
     delay(100);
