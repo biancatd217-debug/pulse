@@ -275,8 +275,6 @@ class PPGLink:
         self._buf = bytearray()
         self._stop = threading.Event()
         self._thread = None
-        self._watchdog = None
-        self._alarm_lock = threading.Lock()
         self._last_valid = time.monotonic()
         self._last_rx = time.monotonic()     # last time ANY bytes arrived
         self._connected_at = None
@@ -301,10 +299,6 @@ class PPGLink:
         self._last_valid = time.monotonic()
         self._thread = threading.Thread(target=self._run, name="PPGLink", daemon=True)
         self._thread.start()
-        # The no-data timer runs on its own thread: opening a dead Bluetooth COM
-        # port can block _run for 10+ s, and the 5 s alarm must not wait for it.
-        self._watchdog = threading.Thread(target=self._watch, name="PPGLinkWatchdog", daemon=True)
-        self._watchdog.start()
 
     def stop(self):
         """
@@ -315,8 +309,6 @@ class PPGLink:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=3)
-        if self._watchdog:
-            self._watchdog.join(timeout=1)
         self._close()
         self.status = STATUS_DISCONNECTED
 
@@ -417,13 +409,14 @@ class PPGLink:
             # (this is the "keep retrying" behaviour of Reqts 16-17).
             if self._ser is None:
                 if not self._try_connect():
+                    self._check_alarm()
                     self._stop.wait(self.retry_interval)
                     continue
-            # State B - connected: one pass of the loop does three jobs
-            # (the 5 s no-data alarm is timed by _watch, not here).
+            # State B - connected: one pass of the loop does four jobs.
             self._read_once()       # 1. read bytes, validate + process any full packets
             self._send_limits()     # 2. resend the GUI's HR limits to the ESP32 if due
-            self._check_silence()   # 3. port open but no bytes at all -> force a reconnect
+            self._check_alarm()     # 3. no valid packet for 5 s -> raise GUI alarm
+            self._check_silence()   # 4. port open but no bytes at all -> force a reconnect
 
     def _try_connect(self):
         """
@@ -438,10 +431,6 @@ class PPGLink:
         """
         self.status = STATUS_CONNECTING
         self._attempts += 1
-        log_attempt = self._attempts == 1 or self._attempts % 10 == 0
-        if log_attempt:
-            # Logged before the open: a Bluetooth COM port can block here for 10+ s.
-            self._log(f"Connecting to {self.port} (attempt {self._attempts})...")
         try:
             ser = self.serial_factory(self.port, self.baudrate, READ_TIMEOUT_S)
             try:
@@ -449,9 +438,8 @@ class PPGLink:
             except (AttributeError, OSError, SerialException):
                 pass
         except (SerialException, OSError, ValueError) as e:
-            if log_attempt:
-                self._log(f"DISCONNECTED: could not open {self.port} ({short_error(e)})")
-            self.status = STATUS_DISCONNECTED   # attempt failed: no connection until one succeeds
+            if self._attempts == 1 or self._attempts % 10 == 0:
+                self._log(f"Connecting to {self.port}... (attempt {self._attempts}: {short_error(e)})")
             return False
 
         self._ser = ser
@@ -503,13 +491,12 @@ class PPGLink:
     def _lost(self, reason):
         """
         Handle a broken link: log, close, and fall back to reconnecting.
-        Status is Disconnected until the next attempt opens the port.
 
         Author: Bianca Dibden
         """
-        self._log(f"DISCONNECTED: link to {self.port} lost ({reason})")
+        self._log(f"Connection lost ({reason})")
         self._close()
-        self.status = STATUS_DISCONNECTED
+        self.status = STATUS_CONNECTING
 
     def _read_once(self):
         """
@@ -609,10 +596,9 @@ class PPGLink:
         self.stats["valid"] += 1
         self._valid_since_connect += 1
         self._last_valid = time.monotonic()
-        with self._alarm_lock:
-            if self.no_data_alarm:
-                self.no_data_alarm = False
-                self._log("Data resumed - no-data alarm cleared")
+        if self.no_data_alarm:
+            self.no_data_alarm = False
+            self._log("Data resumed - no-data alarm cleared")
 
     def _check_alarm(self):
         """
@@ -620,21 +606,9 @@ class PPGLink:
 
         Author: Bianca Dibden
         """
-        with self._alarm_lock:     # same lock as the clear in _handle_line
-            if not self.no_data_alarm and self.seconds_since_packet >= self.alarm_after:
-                self.no_data_alarm = True
-                where = "device disconnected" if self._ser is None else "link open but device silent"
-                self._log(f"NO-DATA ALARM: no valid packet for {self.alarm_after:g} s ({where})")
-
-    def _watch(self):
-        """
-        Watchdog thread: evaluate the no-data alarm every 0.1 s, independent of
-        the (possibly blocking) connect/read loop.
-
-        Author: Bianca Dibden
-        """
-        while not self._stop.wait(0.1):
-            self._check_alarm()
+        if not self.no_data_alarm and self.seconds_since_packet >= self.alarm_after:
+            self.no_data_alarm = True
+            self._log(f"ALARM: no data for {self.alarm_after:.0f} s")
 
     def _check_silence(self):
         """
@@ -650,7 +624,7 @@ class PPGLink:
         if self._ser is None:
             return
         if time.monotonic() - self._last_rx >= self.reconnect_after:
-            self._lost(f"no bytes received for {self.reconnect_after:.0f} s")
+            self._lost(f"no data for {self.reconnect_after:.0f} s")
 
 
 def short_error(e):
