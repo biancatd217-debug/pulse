@@ -8,7 +8,7 @@ Offline tests for ppg_dsp.py, run without any hardware.
    noise. Compares a fixed threshold (Lab 3 style) with the band-pass +
    adaptive-threshold pipeline.
 3. HR tracking: synthetic PPG whose rate ramps 60 -> 110 BPM.
-4. Signal validation: no finger (flat), saturated, and pure noise must all be
+4. Signal validation: saturated and pure noise must all be
    flagged as not ok, with host_hr = None.
 5. Offline analysis of a whole recording (summary-report path).
 
@@ -282,7 +282,6 @@ def test_signal_validation():
     strict, dsp.SHOW_HR_WHEN_SIGNAL_POOR = dsp.SHOW_HR_WHEN_SIGNAL_POOR, False
     rng = np.random.default_rng(5)
     cases = {
-        "no finger (flat + small noise)": (1800 + 3 * rng.standard_normal(15 * FS), "flat"),
         "saturated (stuck at 4095)": (np.clip(synthetic_ppg(15, 70, amplitude=3000) + 2000, 0, 4095), "saturated"),
         "random noise (no pulse)": (2000 + 200 * rng.standard_normal(15 * FS), None),
     }

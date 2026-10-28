@@ -30,9 +30,7 @@ AMPLITUDE = 350          # pulse height in ADC counts
 # (name, kind, seconds, bpm, expected host message)
 SCHEDULE = [
     ("Clean pulse (warm-up)",        "clean",     14, 72,  "acquiring signal, then Signal OK"),
-    ("No finger on sensor",          "flat",      12, 0,   "Signal poor: flat (no finger?)"),
-    ("Finger back on",               "clean",     14, 75,  "Signal OK (recovers)"),
-    ("Sensor saturated",             "saturated", 14, 70,  "Signal poor: saturated"),
+    ("Sensor saturated",             "saturated", 14, 70,  "Heart rate unreliable: saturated"),
     ("Clean again",                  "clean",     14, 70,  "Signal OK"),
     ("Random noise, no pulse",       "noise",     14, 0,   "pulse methods disagree / irregular / no clear rhythm"),
     ("Clean again",                  "clean",     14, 80,  "Signal OK"),
@@ -81,7 +79,7 @@ def _segment(kind, seconds, bpm, rng):
     Parameters
     ----------
     kind : str
-        'clean', 'flat', 'saturated', 'noise', 'motion' or 'irregular'.
+        'clean', 'saturated', 'noise', 'motion' or 'irregular'.
     seconds : int
     bpm : float
     rng : numpy.random.Generator
@@ -101,8 +99,6 @@ def _segment(kind, seconds, bpm, rng):
 
     if kind == "clean":
         return BASELINE + AMPLITUDE * _pulse_train(n, bpm, rng, 0.03) + noise, bpm
-    if kind == "flat":                      # no finger: nothing but sensor noise
-        return BASELINE + rng.normal(0, 2, n), 0.0
     if kind == "saturated":                 # too much light/pressure: pinned at the rail
         return 4060 + AMPLITUDE * _pulse_train(n, bpm, rng, 0.03) + noise, 0.0
     if kind == "noise":                     # band-limited noise, no pulse at all

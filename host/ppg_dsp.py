@@ -69,10 +69,10 @@ HR_MAX_AGE_S = 4.0       # no beat for this long -> HR is stale
 FFT_WINDOW_S = 8.0       # FFT analysis window (8 s -> 0.125 Hz bins before zero-padding)
 FFT_NFFT = 2048          # zero-padded length (0.024 Hz / 1.5 BPM interpolation)
 
-FLAT_P2P_COUNTS = 20     # filtered peak-to-peak below this = no finger / no pulse
+FLAT_P2P_COUNTS = 20     # beat detector: window peak-to-peak below this = no pulse, no beats declared
 # Testing aid: when True, the beat-detector HR is still reported (host_hr) while the
 # signal is judged poor, so the GUI keeps showing HR and the trend. The quality
-# verdict (quality.ok / message) is unchanged and still says "Signal poor".
+# verdict (quality.ok / message) is unchanged and still says "Heart rate unreliable".
 # Set False to withhold HR whenever the signal is not trustworthy (Reqt 10).
 SHOW_HR_WHEN_SIGNAL_POOR = True
 
@@ -100,12 +100,18 @@ class SignalQuality:
     ok : bool
         True if no problems were found.
     reasons : list of str
-        Short machine-readable codes, e.g. 'flat', 'saturated', 'hr_out_of_range',
+        Short machine-readable codes, e.g. 'saturated', 'hr_out_of_range',
         'hr_disagree', 'irregular', 'low_spectral_purity', 'no_beats', 'warming_up'.
     spectral_purity : float
         Fraction of 0.5-3.5 Hz power within +/-0.15 Hz of the dominant peak (0-1).
     peak_to_peak : float
         Peak-to-peak amplitude of the filtered window (ADC counts).
+    clipped_frac : float
+        Fraction of raw samples at the ADC rails (0-1).
+    hr_peak, hr_fft : float or None
+        The two heart-rate estimates compared by the quality check (BPM).
+    ibi_cv : float or None
+        Coefficient of variation of the recent beat intervals.
 
     Author: Bianca Dibden
     """
@@ -113,6 +119,37 @@ class SignalQuality:
     reasons: list = field(default_factory=list)
     spectral_purity: float = 0.0
     peak_to_peak: float = 0.0
+    clipped_frac: float = 0.0
+    hr_peak: float = None
+    hr_fft: float = None
+    ibi_cv: float = None
+
+    def threshold_lines(self):
+        """
+        Measured value vs. threshold for each FAILED check only (Researcher tab).
+
+        Returns
+        -------
+        list of str
+            One line per failed reason; empty when the signal is OK.
+
+        Author: Bianca Dibden
+        """
+        fmt = lambda v: "--" if v is None else f"{v:.1f}"
+        lines = []
+        for r in self.reasons:
+            if r == "saturated":
+                lines.append(f"Clipped samples: {self.clipped_frac:.0%} (limit {SATURATION_FRAC:.0%})")
+            elif r == "hr_out_of_range":
+                lines.append(f"Peak HR: {fmt(self.hr_peak)} BPM (allowed {HR_MIN_BPM}-{HR_MAX_BPM})")
+            elif r == "hr_disagree":
+                lines.append(f"Peak HR {fmt(self.hr_peak)} vs FFT HR {fmt(self.hr_fft)} BPM "
+                             f"(max difference {HR_AGREE_BPM:.0f})")
+            elif r == "irregular":
+                lines.append(f"Beat interval variation: {fmt(self.ibi_cv)} (limit {MAX_IBI_CV})")
+            elif r == "low_spectral_purity":
+                lines.append(f"Spectral purity: {self.spectral_purity:.2f} (min {MIN_SPECTRAL_PURITY})")
+        return lines
 
     def message(self):
         """
@@ -121,14 +158,13 @@ class SignalQuality:
         Returns
         -------
         str
-            e.g. 'Signal OK' or 'Signal poor: flat (no finger?)'.
+            e.g. 'Signal OK' or 'Heart rate unreliable: saturated (too much pressure/light)'.
 
         Author: Bianca Dibden
         """
         if self.ok:
             return "Signal OK"
         text = {
-            "flat": "flat (no finger?)",
             "saturated": "saturated (too much pressure/light)",
             "hr_out_of_range": "pulse rate out of range",
             "hr_disagree": "pulse methods disagree (motion?)",
@@ -137,7 +173,7 @@ class SignalQuality:
             "warming_up": "acquiring signal",
             "no_beats": "no beats detected",
         }
-        return "Signal poor: " + ", ".join(text.get(r, r) for r in self.reasons)
+        return "Heart rate unreliable: " + ", ".join(text.get(r, r) for r in self.reasons)
 
 
 @dataclass
@@ -421,7 +457,6 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
     Decide whether a window of signal is trustworthy.
 
     Checks, in order:
-      flat        - filtered peak-to-peak < FLAT_P2P_COUNTS (no finger / no pulse)
       saturated   - > SATURATION_FRAC of raw samples at the ADC rails
       no_beats    - beat detector has no current HR
       hr_out_of_range - HR outside HR_MIN_BPM..HR_MAX_BPM
@@ -455,12 +490,11 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
     filtered = np.asarray(filtered, dtype=float)
     p2p = float(np.ptp(filtered[-FS * 3:])) if len(filtered) else 0.0
     reasons = []
+    hr_ibi_cv = None
 
     clipped = np.mean((raw <= SATURATION_MARGIN) | (raw >= ADC_MAX - SATURATION_MARGIN))
     if clipped > SATURATION_FRAC:
         reasons.append("saturated")
-    if p2p < FLAT_P2P_COUNTS:
-        reasons.append("flat")
     if not reasons:
         if hr_peak is None:
             reasons.append("no_beats")
@@ -473,14 +507,17 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
                 reasons.append("hr_disagree")
         if ibis is not None and len(ibis) >= 3:
             ibis = np.asarray(ibis, dtype=float)
-            if ibis.std() / ibis.mean() > MAX_IBI_CV:
+            hr_ibi_cv = float(ibis.std() / ibis.mean())
+            if hr_ibi_cv > MAX_IBI_CV:
                 reasons.append("irregular")
         if hr_fft is not None and hr_peak is not None:
             if purity < MIN_SPECTRAL_PURITY:
                 reasons.append("low_spectral_purity")
 
     return SignalQuality(ok=not reasons, reasons=reasons,
-                         spectral_purity=purity, peak_to_peak=p2p)
+                         spectral_purity=purity, peak_to_peak=p2p,
+                         clipped_frac=float(clipped), hr_peak=hr_peak, hr_fft=hr_fft,
+                         ibi_cv=hr_ibi_cv)
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +538,7 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
 #     +--> fft_heart_rate()                 last 8 s of filtered data, dominant peak => hr_fft
 #     |                                     (+ "spectral purity" = how clean the rhythm is)
 #     |
-#     +--> assess_signal()                  flat? saturated? hr_peak vs hr_fft agree?
+#     +--> assess_signal()                  saturated? hr_peak vs hr_fft agree?
 #                                           IBIs regular? purity high?  => SignalQuality
 #
 #   host_hr = hr_peak (shown on the GUI; the FFT value is only a cross-check)

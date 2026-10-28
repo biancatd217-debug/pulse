@@ -71,7 +71,7 @@ import argparse
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -129,8 +129,10 @@ class HostRecord:
         FFT cross-check pulse rate (BPM) - useful for a Researcher tab.
     signal_ok : bool
         Signal validation verdict.
+    signal_details : list of str
+        Measured value vs. threshold for each failed quality check (empty if OK).
     signal_message : str
-        e.g. 'Signal OK' or 'Signal poor: flat (no finger?)'.
+        e.g. 'Signal OK' or 'Heart rate unreliable: saturated (too much pressure/light)'.
     latency_s : float
         Host processing time for this packet (s). End-to-end latency is this
         plus up to 1 s of buffering on the MCU plus Bluetooth transmission.
@@ -149,6 +151,7 @@ class HostRecord:
     signal_ok: bool
     signal_message: str
     latency_s: float
+    signal_details: list = field(default_factory=list)
 
 
 class SequenceTracker:
@@ -586,6 +589,7 @@ class PPGLink:
             raw=result.raw, filtered=result.filtered, threshold=result.threshold,
             host_hr=result.host_hr, hr_fft=result.hr_fft,
             signal_ok=result.quality.ok, signal_message=result.quality.message(),
+            signal_details=result.quality.threshold_lines(),
             latency_s=time.perf_counter() - t0,
         )
         if self.last_record is not None and rec.recording != self.last_record.recording:

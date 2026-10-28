@@ -1447,6 +1447,20 @@ def create_gui():
         ],
         [
             sg.Text(
+                "Failed checks:",
+                size=(18, 1),
+                text_color=TEXT_MUTED,
+                background_color=PANEL
+            ),
+            sg.Text(
+                "--",
+                key="-QUALITY_DETAILS-",
+                size=(34, 3),
+                background_color=PANEL
+            )
+        ],
+        [
+            sg.Text(
                 "Detected pulses:",
                 size=(18, 1),
                 text_color=TEXT_MUTED,
@@ -1477,10 +1491,11 @@ def create_gui():
     # The original pulse-count row is not displayed.
     researcher_hr_layout[0][0].DisplayText = "HEART RATE"
     signal_analysis_layout[0][0].DisplayText = "SIGNAL SUMMARY"
-    signal_analysis_layout[3][0].DisplayText = "Average Host HR:"
+    signal_analysis_layout[4][0].DisplayText = "Average Host HR:"
     quality_row = signal_analysis_layout[1]
     quality_value = quality_row[1]
-    average_row = signal_analysis_layout[3]
+    details_row = signal_analysis_layout[2]
+    average_row = signal_analysis_layout[4]
     pulse_value = sg.Text("--", key="-PULSE_COUNT-", visible=False)
 
     # Keep hidden elements so existing packet/status updates still find their keys.
@@ -1519,7 +1534,7 @@ def create_gui():
     ]
     signal_analysis_layout = [
         signal_analysis_layout[0],
-        [quality_row[0]], [quality_value], average_row,
+        [quality_row[0]], [quality_value], [details_row[0]], [details_row[1]], average_row,
         [sg.Text("PPG amplitude (P-P):", text_color=TEXT_MUTED, background_color=PANEL)],
         [sg.Text("--", key="-AMPLITUDE-", background_color=PANEL)],
     ]
@@ -1527,7 +1542,7 @@ def create_gui():
     value_sizes = {
         "-MCU_HR-": (10, 1), "-HOST_HR-": (10, 1),
         "-HR_DIFFERENCE-": (10, 1), "-FILTER_STATUS-": (24, 2),
-        "-LAST_PACKET-": (24, 1), "-SIGNAL_QUALITY-": (24, 3),
+        "-LAST_PACKET-": (24, 1), "-SIGNAL_QUALITY-": (24, 3), "-QUALITY_DETAILS-": (24, 4),
         "-PULSE_COUNT-": (4, 1),
         "-AVERAGE_HR-": (9, 1), "-AMPLITUDE-": (16, 1),
     }
@@ -2045,6 +2060,11 @@ def main():
             )
             window["-SIGNAL_QUALITY-"].update(
                 rec.signal_message, text_color=GREEN if rec.signal_ok else AMBER
+            )
+            # Only the thresholds behind the failed quality check(s) are listed.
+            window["-QUALITY_DETAILS-"].update(
+                "\n".join(rec.signal_details) if rec.signal_details else "--",
+                text_color=AMBER if rec.signal_details else TEXT_MUTED
             )
             window["-PULSE_COUNT-"].update("--")
             amplitude = researcher.amplitude()
