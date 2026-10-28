@@ -1893,10 +1893,10 @@ def update_hr_display(window, host_hr, signal_message, low_limit, high_limit,
     if host_hr > high_limit:
         return "high"
     if not signal_ok:
-        # HR is still shown (testing), but flag that it is unverified; the reason is
+        # HR is still shown (testing), but flag that the signal is unreliable; the reason is
         # in the PULSE SIGNAL box.
         window["-CURRENT_HR-"].update(text_color=AMBER)
-        window["-HR_STATUS-"].update("HEART RATE UNVERIFIED", text_color=AMBER)
+        window["-HR_STATUS-"].update("HEART RATE SIGNAL UNRELIABLE", text_color=AMBER)
     return "normal"
 
 # ============================================================
