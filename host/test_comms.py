@@ -227,7 +227,7 @@ def test_loss_and_recovery(mode):
     dev.power_off()
     t_alarm = wait_for(link, lambda: link.no_data_alarm, 2, recs, evs)
     check("no-data alarm raised", t_alarm is not None, f"after {t_alarm:.2f} s (threshold 0.5 s)" if t_alarm else "")
-    check("loss logged", any("Connection lost" in e for e in evs))
+    check("loss logged", any("DISCONNECTED" in e and "lost" in e for e in evs))
     wait_for(link, lambda: False, 0.6, recs, evs)        # several failed reconnect attempts
     n_before = len(recs)
     dev.power_on()
@@ -367,6 +367,36 @@ def test_limits():
           out == ["1 55.0 99.5", "0 0.0 0.0", "1 50.0 100.0", "0 0.0 0.0", "0 0.0 0.0"], str(out))
 
 
+def test_blocking_connect():
+    """
+    Test 9: a reconnect attempt that blocks (a dead Bluetooth COM port can take
+    10+ s to fail on Windows) must not delay the no-data alarm.
+
+    Author: Bianca Dibden
+    """
+    print("\nTest 9 - alarm is not delayed by a blocking reconnect")
+    dev = SimulatedDevice(period=0.1, loss_mode="silent")
+    opens = []
+
+    def slow_factory(port, baud, timeout):
+        opens.append(time.monotonic())
+        if len(opens) > 1:
+            time.sleep(3.0)                 # dead port: open blocks, then fails
+            raise OSError("could not open port")
+        return dev.open(port, baud, timeout)
+
+    link = PPGLink("SIM", serial_factory=slow_factory, **FAST)
+    recs, evs = [], []
+    link.start()
+    wait_for(link, lambda: len(recs) >= 10, 3, recs, evs)
+    dev.power_off()
+    t_alarm = wait_for(link, lambda: link.no_data_alarm, 2.5, recs, evs)
+    check("alarm raised while reconnect is blocked", t_alarm is not None and len(opens) > 1,
+          f"after {t_alarm:.2f} s (threshold 0.5 s, open blocks 3 s)" if t_alarm else "")
+    check("alarm log says device disconnected", any("NO-DATA ALARM" in e and "disconnected" in e for e in evs), str(evs[-2:]))
+    link.stop()
+
+
 if __name__ == "__main__":
     test_packet_format()
     test_sequence_tracker()
@@ -376,6 +406,7 @@ if __name__ == "__main__":
     test_loss_and_recovery("error")
     test_recording_flag()
     test_limits()
+    test_blocking_connect()
     if "--quick" not in sys.argv:
         test_real_timing()
     print(f"\n{sum(RESULTS)}/{len(RESULTS)} checks passed.")
