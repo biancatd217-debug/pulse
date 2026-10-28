@@ -440,6 +440,7 @@ class PPGLink:
         except (SerialException, OSError, ValueError) as e:
             if self._attempts == 1 or self._attempts % 10 == 0:
                 self._log(f"Connecting to {self.port}... (attempt {self._attempts}: {short_error(e)})")
+            self.status = STATUS_DISCONNECTED   # attempt failed: no connection until one succeeds
             return False
 
         self._ser = ser
@@ -491,12 +492,13 @@ class PPGLink:
     def _lost(self, reason):
         """
         Handle a broken link: log, close, and fall back to reconnecting.
+        Status is Disconnected until the next attempt opens the port.
 
         Author: Bianca Dibden
         """
         self._log(f"Connection lost ({reason})")
         self._close()
-        self.status = STATUS_CONNECTING
+        self.status = STATUS_DISCONNECTED
 
     def _read_once(self):
         """

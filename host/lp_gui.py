@@ -625,13 +625,14 @@ def update_communication_display(window, communication, link):
     Clear stale Host HR on every alarmed poll; update connection/banner text only on changes.
     Author: Bianca Dibden (integration)
     """
-    # Never leave a stale HR on screen while there is no data.
-    # Fresh data resumes the HR display after the no-data alarm clears.
-    if link.no_data_alarm:
+    # Never leave a stale HR on screen while there is no link or no data.
+    # Fresh data resumes the HR display once the link is back and the alarm clears.
+    if link.status != STATUS_CONNECTED or link.no_data_alarm:
         window["-CURRENT_HR-"].update("--.-", text_color=TEXT_MUTED)
-        window["-HR_STATUS-"].update("NO DATA - CHECK CONNECTION", text_color=RED)
+        message = "NO CONNECTION" if link.status != STATUS_CONNECTED else "NO DATA - CHECK CONNECTION"
+        window["-HR_STATUS-"].update(message, text_color=RED)
 
-    # Skip unchanged banner/status text, but always clear HR while the no-data alarm is active.
+    # Skip unchanged banner/status text, but always clear HR while disconnected or the no-data alarm is active.
     state = (link.status, link.no_data_alarm)
     if state == communication["shown"]:
         return
