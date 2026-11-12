@@ -13,12 +13,9 @@ Run from the project root:
     python3 host/lp_gui.py /dev/tty.BMET2922-G00
 
 Use the actual Bluetooth serial port for hardware; no argument defaults to SIM.
-Integration with comms.py / ppg_dsp.py: Bianca Dibden
+Authors: Alva Svensson (GUI)
+         Bianca Dibden (integration with comms.py / ppg_dsp.py)
 """
-
-# ============================================================
-# IMPORTS
-# ============================================================
 
 import FreeSimpleGUI as sg
 import numpy as np
@@ -37,40 +34,11 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from comms import PPGLink, STATUS_CONNECTED, STATUS_CONNECTING, MAX_FORWARD_GAP
 from packet_format import SAMPLES_PER_PACKET, SEQ_MODULO
 
-# ============================================================
-# HOW THIS FILE IS ORGANISED (read this first)
-# ============================================================
-# DATA FLOW
-#   MCU / simulator --> comms.py PPGLink (background thread: validates packets,
-#   runs ppg_dsp.py filtering + Host HR) --> queue of HostRecord objects
-#   --> main() event loop below (polls the queue every 50 ms) --> plots,
-#   labels, CSV file and PDF report.
-#
-# A HostRecord (one packet, normally 50 samples = 1 s) holds:
-#   seq, time, raw[], filtered[], mcu_hr, host_hr, signal_ok, signal_message,
-#   recording (button flag from the MCU), latency_s.
-#
-# KEY COMPONENTS (top to bottom)
-#   1. Constants            colours, 50 Hz sample rate, display windows, HR limits
-#   2. add_plot()           builds one themed Matplotlib figure inside a Tk canvas
-#   3. Researcher analysis  FFT, spectrogram, 2nd derivative (display only)
-#   4. Gap detection        display_packet_gap() decides if data was lost
-#   5. SessionSummary +     collects stats while recording, then a background
-#      generate_session_pdf thread writes the PDF report from the saved CSV
-#   6. Log / comms display  system log (Reqt 13), Bluetooth status (Reqt 14)
-#   7. CSV recording        start_recording / save_packet / stop_recording
-#   8. HR status            colours + text for low / normal / high HR
-#   9. Layout helpers       configure_*() set up resizing after the window exists
-#  10. create_gui()         defines every widget (Monitor tab + Researcher tab)
-#  11. Display helpers      legend styling, y-axis autoscale, update_hr_display()
-#  12. main()               creates plots + PPGLink, then runs the event loop
-#
-# NAMING CONVENTION: every widget has a key like "-CURRENT_HR-"; the code reads
-# or changes it with window["-CURRENT_HR-"].update(...).
+# Data flow: MCU/simulator -> comms.py PPGLink (validation + ppg_dsp.py) -> queue of
+# HostRecord objects -> main() event loop -> plots, labels, CSV and PDF report.
+# Widgets are addressed by key, e.g. window["-CURRENT_HR-"].update(...).
 
-# ============================================================
-# GUI COLOURS AND FONTS
-# ============================================================
+# GUI colours and fonts
 
 BG = "#20252B"
 PANEL = "#292F36"
@@ -89,9 +57,7 @@ FONT_SMALL = ("Helvetica", 12, "bold")
 FONT_HR = ("Helvetica", 80, "bold")
 FONT_VALUE = ("Helvetica", 16, "bold")
 
-# ============================================================
-# SYSTEM SETTINGS
-# ============================================================
+# System settings
 
 # Nominal MCU sampling is 50 Hz; host display calculations assume 20 ms spacing.
 SAMPLE_RATE = 50
@@ -117,9 +83,7 @@ DEFAULT_PORT = "SIM"
 # Time to wait for GUI events (ms); this does not set the plot update rate.
 GUI_POLL_MS = 50
 
-# ============================================================
-# MATPLOTLIB HELPER
-# ============================================================
+# Matplotlib helper
 
 def add_plot(canvas_element, figsize):
     """Create a themed Matplotlib figure and embed it in a GUI canvas.
@@ -128,6 +92,8 @@ def add_plot(canvas_element, figsize):
     placeholder; this function puts a Matplotlib figure inside it.
     Returns (figure, axes, canvas_agg). Later code updates the line data and
     calls canvas_agg.draw() to refresh the picture.
+
+    Author: Alva Svensson
     """
 
     fig = Figure(figsize=figsize)
@@ -163,12 +129,13 @@ def add_plot(canvas_element, figsize):
 
     return fig, ax, fig_agg
 
-# ============================================================
-# RESEARCHER ANALYSIS (visualisation only; no HR/filter replacement)
-# ============================================================
+# Researcher analysis (display only)
 
 def spectral_magnitude(samples):
-    """Return frequencies (Hz) and one-sided FFT amplitudes (filtered ADC counts)."""
+    """Return frequencies (Hz) and one-sided FFT amplitudes (filtered ADC counts).
+
+    Author: Alva Svensson
+    """
     x = np.asarray(samples, dtype=float)
     if len(x) < 2 * SAMPLE_RATE or not np.isfinite(x).all():
         return np.array([]), np.array([])
@@ -191,6 +158,8 @@ def ppg_spectrogram(samples):
     Return frequencies (Hz), window-centre times relative to the newest sample,
     and amplitude in dB relative to 1 ADC count. Per-window means are removed.
     Zeros extend the history edges; edge estimates therefore include assumed data.
+
+    Author: Alva Svensson
     """
     x = np.asarray(samples, dtype=float)
     length, hop = 200, 25
@@ -219,6 +188,8 @@ def display_packet_gap(previous, record, interrupted=False, timeout=5.0):
 
     Use sequence numbers and host time to detect interruptions, not exact acquisition times.
     These results affect display history only; no replacement measurements are created.
+
+    Author: Alva Svensson
     """
     if interrupted or len(record.raw) != SAMPLES_PER_PACKET or len(record.filtered) != SAMPLES_PER_PACKET:
         return None
@@ -236,9 +207,13 @@ def display_packet_gap(previous, record, interrupted=False, timeout=5.0):
 
 
 class ResearcherAnalysis:
-    """Keep up to 10 s of filtered samples, clearing history after detected interruptions."""
+    """Keep up to 10 s of filtered samples, clearing history after detected interruptions.
+
+    Author: Alva Svensson
+    """
     def __init__(self):
         # deque(maxlen) automatically discards the oldest sample when full (500 samples = 10 s).
+        """Author: Alva Svensson"""
         self.samples = deque(maxlen=10 * SAMPLE_RATE)
         self.last_seq = None
         self.valid_samples = 0
@@ -246,6 +221,7 @@ class ResearcherAnalysis:
     def append(self, record, interrupted=False):
         # Called once per packet. A sequence jump or reconnect restarts the history so
         # the FFT/spectrogram never join samples from either side of a gap.
+        """Author: Alva Svensson"""
         if interrupted or (self.last_seq is not None and (record.seq - self.last_seq) % 65536 != 1):
             self.samples.clear()
             self.valid_samples = 0
@@ -257,6 +233,7 @@ class ResearcherAnalysis:
     def amplitude(self):
         # Recent observed amplitude uses continuous filtered data, regardless
         # of pulse validity or signal quality; reject incomplete/non-finite data.
+        """Author: Alva Svensson"""
         samples = np.asarray(self.samples)[-3 * SAMPLE_RATE:]
         if len(samples) < 3 * SAMPLE_RATE or not np.isfinite(samples).all():
             return None
@@ -264,7 +241,10 @@ class ResearcherAnalysis:
 
 
 def researcher_draw_idle(canvas):
-    """Schedule a visible plot to redraw when Tk is idle; hidden plots retain their data."""
+    """Schedule a visible plot to redraw when Tk is idle; hidden plots retain their data.
+
+    Author: Alva Svensson
+    """
     if canvas.get_tk_widget().winfo_ismapped():
         canvas.draw_idle()
 
@@ -273,6 +253,8 @@ def bind_researcher_mapping(canvas):
     """Let TkAgg resize plots, skipping repeated notifications with the same size and DPI.
 
     Repeated notifications can rebuild the canvas image unnecessarily and cause flashing.
+
+    Author: Alva Svensson
     """
     widget = canvas.get_tk_widget()
     last_size = None
@@ -295,6 +277,8 @@ def create_researcher_plots(window):
 
     Plots are built once and only their data is replaced afterwards
     (set_data), which is much faster than redrawing from scratch each second.
+
+    Author: Alva Svensson
     """
     result = {}
     specs = (
@@ -341,7 +325,10 @@ def create_researcher_plots(window):
 
 
 def update_researcher_plots(plots, analysis):
-    """Update existing FFT, spectrogram and derivative plots from the current history."""
+    """Update existing FFT, spectrogram and derivative plots from the current history.
+
+    Author: Alva Svensson
+    """
     x = np.asarray(analysis.samples, dtype=float)
     # FFT: describe the available continuous filtered history, up to ten seconds.
     ax, line, canvas, waiting = plots['fft']
@@ -380,9 +367,7 @@ def update_researcher_plots(plots, analysis):
     waiting.set_visible(len(x) < SAMPLE_RATE)
     researcher_draw_idle(canvas)
 
-# ============================================================
-# COMPLETED-SESSION PDF REPORTS (no changes to the CSV schema)
-# ============================================================
+# Completed-session PDF reports
 
 class SessionSummary:
     """Collect recording metadata: saved packets, signal quality, HR limits and observed alarms.
@@ -390,8 +375,11 @@ class SessionSummary:
     One instance exists per recording. main() feeds it every saved packet
     (observe), alarm transition (alarm) and limit change (change_limits); the
     PDF generator then prints these totals on the report.
+
+    Author: Alva Svensson
     """
     def __init__(self, filename, low, high):
+        """Author: Alva Svensson"""
         self.filename = filename
         self.samples = 0
         self.quality = Counter()
@@ -406,6 +394,7 @@ class SessionSummary:
         self.last_seq = None
 
     def observe(self, record):
+        """Author: Alva Svensson"""
         if self.start_time is None:
             self.start_time = record.time - (len(record.raw) - 1) * SAMPLE_PERIOD
         # Observe each saved packet once; quality counters describe packets, not individual beats.
@@ -424,12 +413,14 @@ class SessionSummary:
 
     def alarm(self, state):
         # Count entries into observed low/high states, not every out-of-limit packet.
+        """Author: Alva Svensson"""
         if state in ('low', 'high') and state != self.last_alarm:
             self.alarm_events[state] += 1
         self.last_alarm = state
 
     def change_limits(self, low, high):
         # Timestamp limit changes relative to the reconstructed first saved sample.
+        """Author: Alva Svensson"""
         elapsed = max(0, time.time() - self.start_time) if self.start_time is not None else 0
         self.limits.append((elapsed, low, high))
 
@@ -443,6 +434,8 @@ def generate_session_pdf(session):
     (every 50th row), (3) page 1 = HR statistics + alarms + HR trend,
     (4) page 2 = last 10 s of PPG + its spectrum, (5) optional metadata pages,
     (6) write to a .tmp file and rename, so a crash never leaves a broken PDF.
+
+    Author: Alva Svensson
     """
     # Read the completed recording; do not recalculate filtering or Host HR for the report.
     with open(session.filename, newline='') as source:
@@ -495,7 +488,7 @@ def generate_session_pdf(session):
             plot_host = np.insert(host[packet_end], hr_breaks, np.nan)
             plot_mcu = np.insert(mcu[packet_end], hr_breaks, np.nan)
 
-            # PAGE 1: whole-session statistics, quality/alarm metadata and HR comparison.
+            # Page 1: session statistics and HR comparison
             fig = Figure(figsize=(8.27, 11.69), facecolor='white')
             fig.text(.09, .945, 'LumiPulse', fontsize=25, weight='bold', color=blue)
             fig.text(.09, .910, 'PPG Recording Session Summary', fontsize=15, color=blue)
@@ -552,7 +545,7 @@ def generate_session_pdf(session):
             footer(fig, 1)
             pdf.savefig(fig)
 
-            # PAGE 2: final continuous PPG excerpt and its spectrum, not whole-session waveforms.
+            # Page 2: final continuous PPG excerpt and spectrum
             fig = Figure(figsize=(8.27, 11.69), facecolor='white')
             fig.text(.09, .945, 'LumiPulse', fontsize=25, weight='bold', color=blue)
             fig.text(.09, .910, 'Recorded Signal Analysis', fontsize=15, color=blue)
@@ -589,7 +582,7 @@ def generate_session_pdf(session):
             for ax in axes:
                 style_axis(ax)
             pdf.savefig(fig)
-            # OPTIONAL PAGES: keep extended limit history and quality details out of the main summary.
+            # Optional pages: limit history and quality details
             if len(session.limits) > 1 or len(quality_lines) > 3:
                 details = ['HR limit history (session seconds / low / high BPM)']
                 details += [f'{elapsed:.2f} s   {low:g} - {high:g}'
@@ -616,15 +609,19 @@ class SessionReports:
 
     Building a PDF takes a moment, so it runs on a worker thread to keep the GUI
     responsive; main() calls poll() every loop to log the result when it finishes.
+
+    Author: Alva Svensson
     """
     def __init__(self):
         # Generate one report at a time, using separate figures from the live GUI.
+        """Author: Alva Svensson"""
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='LumiPulsePDF')
         self.pending = []
         self.submitted = set()
 
     def submit(self, session):
         # Submit each nonempty completed recording at most once.
+        """Author: Alva Svensson"""
         if session is None or not session.samples or session.filename in self.submitted:
             return
         self.submitted.add(session.filename)
@@ -632,6 +629,7 @@ class SessionReports:
 
     def poll(self, window):
         # Check finished jobs without waiting; log their results on the GUI thread.
+        """Author: Alva Svensson"""
         for future in self.pending[:]:
             if not future.done():
                 continue
@@ -645,17 +643,18 @@ class SessionReports:
 
     def close(self, window):
         # Normal exit waits for pending reports before destroying the window.
+        """Author: Alva Svensson"""
         self.worker.shutdown(wait=True)
         self.poll(window)
 
-# ============================================================
-# SYSTEM LOG
-# ============================================================
+# System log
 
 def add_log(window, message):
     """Add a system-log event using the required time.ctime() format (Reqt 13).
 
     Example: Thu Sep 19 17:46:50 2024: Pulse Low
+
+    Author: Alva Svensson
     """
     add_log_line(window, f"{time.ctime()}: {message}")
 
@@ -667,15 +666,13 @@ def add_log_line(window, line):
     """
     window["-SYSTEM_LOG-"].update(line + "\n", append=True)
 
-# ============================================================
-# COMMUNICATION STATUS
-# ============================================================
-# Packet validation, the 5 s no-data timer, reconnection and the
-# matching log messages are handled in comms.py (PPGLink). The GUI
-# only displays the state that PPGLink reports.
+# Communication status (logic lives in comms.py PPGLink)
 
 def register_valid_packet(window, record):
-    """Update the hidden last-packet field for a validated HostRecord."""
+    """Update the hidden last-packet field for a validated HostRecord.
+
+    Author: Alva Svensson
+    """
     packet_time = datetime.fromtimestamp(record.time).strftime("%H:%M:%S")
     window["-LAST_PACKET-"].update(f"{packet_time}  (#{record.seq})")
 
@@ -733,12 +730,13 @@ def update_communication_display(window, communication, link):
         banner = ""
     window["-COMM_ALARM-"].update(banner)
 
-# ============================================================
-# CSV RECORDING
-# ============================================================
+# CSV recording
 
 def start_recording():
-    """Create a uniquely named recording CSV and write its column headings."""
+    """Create a uniquely named recording CSV and write its column headings.
+
+    Author: Alva Svensson
+    """
     # Save under the launch directory; create a new file rather than overwrite an earlier one.
     os.makedirs("LumiPulse_Recordings", exist_ok=True)
     file_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -789,13 +787,14 @@ def save_packet(csv_writer, record, recording_start_time):
 
 
 def stop_recording(csv_file):
-    """Close and flush the CSV if a recording file is open."""
+    """Close and flush the CSV if a recording file is open.
+
+    Author: Alva Svensson
+    """
     if csv_file is not None:
         csv_file.close()
 
-# ============================================================
-# HEART RATE STATUS
-# ============================================================
+# Heart rate status
 
 def update_hr_status(
     window,
@@ -806,6 +805,8 @@ def update_hr_status(
     """Colour the Host HR display and status according to the active low/high limits.
 
     Red = outside limits (alarm), green = within limits.
+
+    Author: Alva Svensson
     """
 
     if heart_rate < low_limit:
@@ -835,13 +836,8 @@ def update_hr_status(
             text_color=GREEN
         )
 
-# ============================================================
-# GUI LAYOUT AND RESIZING
-# ============================================================
-# FreeSimpleGUI stacks every layout row with Tk's "pack". These configure_*()
-# functions run AFTER the window exists and re-arrange the Tk widgets into
-# grids with fixed proportions, so panels and fonts scale when the window is
-# resized. They are cosmetic: no data handling happens here.
+# GUI layout and resizing
+# Applied after the window exists so panels and fonts scale on resize
 
 def configure_monitor_grid(window):
     """Allocate the Monitor layout once; Tk handles later changes in window size.
@@ -849,6 +845,8 @@ def configure_monitor_grid(window):
     The plot heights split 1:1 and the log sits below both. The right-hand column (HR box,
     limits, pulse signal, session) is one cell; configure_right_column() gives any spare
     height to the HR box. The main column widths use a 65:35 ratio.
+
+    Author: Alva Svensson
     """
     cells = (
         ("-TREND_PANEL-", 0, 0, 3, 1),
@@ -878,7 +876,10 @@ def configure_monitor_grid(window):
 
 
 def configure_right_column(window):
-    """Give spare height in the right-hand column to the HR box; keep the rest compact."""
+    """Give spare height in the right-hand column to the HR box; keep the rest compact.
+
+    Author: Alva Svensson
+    """
     for key, grows in (("-HR_PANEL-", True), ("-HR_CONTROLS_PANEL-", False),
                        ("-PULSE_PANEL-", False), ("-SESSION_PANEL-", False)):
         row = window[key].ParentRowFrame
@@ -889,7 +890,10 @@ def configure_right_column(window):
 
 
 def configure_host_hr_panel(window):
-    """Centre the Host HR number in its own box and scale it up as the box grows."""
+    """Centre the Host HR number in its own box and scale it up as the box grows.
+
+    Author: Alva Svensson
+    """
     window.TKroot.update_idletasks()
     panel = window["-HR_PANEL-"].Widget
     number = window["-CURRENT_HR-"].Widget
@@ -944,6 +948,8 @@ def configure_main_tabs(window):
 
     The tabs keep their normal size at the starting window width and grow by about half
     the window's relative growth (capped), so they stay proportionate but easy to hit.
+
+    Author: Alva Svensson
     """
     from tkinter import font as tkfont, ttk
     root = window.TKroot
@@ -982,7 +988,10 @@ def configure_main_tabs(window):
 
 
 def configure_session_timer(window):
-    """Scale only the Session timer font, keeping it within the available panel space."""
+    """Scale only the Session timer font, keeping it within the available panel space.
+
+    Author: Alva Svensson
+    """
     from tkinter import font as tkfont
 
     window.TKroot.update_idletasks()
@@ -1034,7 +1043,10 @@ def configure_session_timer(window):
 
 
 def configure_researcher_grid(window):
-    """Allocate 78% of Researcher width to plots and 22% to the information sidebar."""
+    """Allocate 78% of Researcher width to plots and 22% to the information sidebar.
+
+    Author: Alva Svensson
+    """
     canvas_keys = ("-HR_COMPARISON_CANVAS-", "-FFT_CANVAS-",
                    "-SPECTROGRAM_CANVAS-", "-DERIVATIVE_CANVAS-")
     panels = [window[key].ParentRowFrame.master for key in canvas_keys]
@@ -1071,7 +1083,10 @@ def configure_researcher_grid(window):
 
 
 def fit_initial_window(window):
-    """Fit and centre the initial window on screen, then let the existing grids resize it."""
+    """Fit and centre the initial window on screen, then let the existing grids resize it.
+
+    Author: Alva Svensson
+    """
     root = window.TKroot
     root.update_idletasks()
     wm_width, wm_height = root.maxsize()
@@ -1094,9 +1109,7 @@ def fit_initial_window(window):
     root.geometry(f"{width}x{height}+{left}+{top}")
 
 
-# ============================================================
-# GUI CONSTRUCTION
-# ============================================================
+# GUI construction
 def create_gui():
     """Build both tabs, finalise the widgets and configure their layout and resizing.
 
@@ -1105,6 +1118,8 @@ def create_gui():
     the frames into the Monitor and Researcher tabs inside one sg.Window.
       Monitor tab:    HR trend, Host HR + limits, live PPG, session info, system log
       Researcher tab: MCU-vs-Host HR, FFT, spectrogram, 2nd derivative, info sidebar
+
+    Author: Alva Svensson
     """
 
     sg.theme("DarkGrey13")
@@ -1118,9 +1133,7 @@ def create_gui():
         font=FONT_NORMAL
     )
 
-    # ========================================================
-    # HEADER
-    # ========================================================
+    # Header
 
     header = [
         sg.Text(
@@ -1150,9 +1163,7 @@ def create_gui():
         ),
     ]
 
-    # ========================================================
-    # HOST HR DISPLAY
-    # ========================================================
+    # Host HR display
 
     current_hr_layout = [
         [
@@ -1186,9 +1197,7 @@ def create_gui():
         ]
     ]
 
-    # ========================================================
-    # HR LIMITS PANEL
-    # ========================================================
+    # HR limits panel
 
     hr_limits_layout = [
         [
@@ -1306,17 +1315,13 @@ def create_gui():
         ]
     ]
 
-    # ========================================================
-    # COMBINE HOST HR AND LIMIT CONTROLS
-    # ========================================================
+    # Combine host HR and limit controls
 
     # One panel: large HR/BPM, then limits, Apply, and textual alarm/status.
     # The last row of hr_limits_layout is the PULSE SIGNAL frame; it gets its own box.
     pulse_signal_row = [hr_limits_layout.pop()[0]]
 
-    # ========================================================
-    # HEART RATE TREND PANEL
-    # ========================================================
+    # Heart rate trend panel
 
     hr_trend_layout = [
         [
@@ -1338,9 +1343,7 @@ def create_gui():
         ]
     ]
 
-    # ========================================================
-    # PPG PANEL
-    # ========================================================
+    # PPG panel
 
     ppg_layout = [
         [
@@ -1394,9 +1397,7 @@ def create_gui():
         ]
     ]
 
-    # ========================================================
-    # SESSION PANEL
-    # ========================================================
+    # Session panel
 
     session_layout = [
         [
@@ -1444,9 +1445,7 @@ def create_gui():
         ]
     ]
 
-    # ========================================================
-    # SYSTEM LOG
-    # ========================================================
+    # System log
 
     system_log_layout = [
         [
@@ -1470,9 +1469,7 @@ def create_gui():
         ]
     ]
 
-    # ========================================================
-    # MONITOR TAB
-    # ========================================================
+    # Monitor tab
     # Each panel starts in its own row; configure_monitor_grid() arranges these rows in a grid.
     monitor_layout = [
         [sg.Frame(
@@ -1511,9 +1508,7 @@ def create_gui():
         )]
     ]
 
-    # ========================================================
-    # RESEARCHER - MCU VS HOST HR
-    # ========================================================
+    # Researcher - MCU vs Host HR
 
     researcher_hr_layout = [
         [
@@ -1569,9 +1564,7 @@ def create_gui():
         ]
     ]
 
-    # ========================================================
-    # RESEARCHER - HR COMPARISON GRAPH
-    # ========================================================
+    # Researcher - HR comparison graph
 
     comparison_plot_layout = [
         [
@@ -1592,9 +1585,7 @@ def create_gui():
         ]
     ]
 
-    # ========================================================
-    # RESEARCHER - ADDITIONAL SIGNAL ANALYSIS
-    # ========================================================
+    # Researcher - additional signal analysis
 
     signal_analysis_layout = [
         [
@@ -1635,18 +1626,16 @@ def create_gui():
         ]
     ]
 
-    # Reuse the existing measurement elements/keys in the final sidebar.
-    # The original pulse-count row is not displayed.
     researcher_hr_layout[0][0].DisplayText = "HEART RATE"
     signal_analysis_layout[0][0].DisplayText = "SIGNAL SUMMARY"
     quality_row = signal_analysis_layout[1]
     quality_value = quality_row[1]
     pulse_value = sg.Text("--", key="-PULSE_COUNT-", visible=False)
 
-    # Keep hidden elements so existing packet/status updates still find their keys.
+    # Hidden elements keep their keys so existing updates still work
     filter_value = sg.Text("Waiting for data", key="-FILTER_STATUS-", visible=False)
     last_packet_value = sg.Text("--", key="-LAST_PACKET-", visible=False)
-    # PROCESSING SUBTABS: matching label/value heights keeps their first lines aligned.
+    # Processing subtabs
     def processing_rows(entries):
         return [[
             sg.Text(label, size=(9, lines), font=FONT_NORMAL, text_color=TEXT_MUTED,
@@ -1677,9 +1666,6 @@ def create_gui():
             tab_background_color=BG, expand_x=True, expand_y=True, pad=(2, 2))],
         [filter_value, last_packet_value, pulse_value]
     ]
-    # Each measurement is a muted label with its value directly beneath; every text
-    # is left-justified with the same padding so the labels and values share one
-    # left edge, in line with the pulse-signal text above.
     def summary_label(text, key):
         return [sg.Text(text, key=key, justification="left",
                         text_color=TEXT_MUTED, background_color=PANEL)]
@@ -1709,7 +1695,6 @@ def create_gui():
                     element.Size = value_sizes[element.Key]
                     element.AutoSizeText = False
                 elif element.Type == sg.ELEM_TYPE_TEXT:
-                    # Old STFT-caption case; unused by the current visible layout.
                     if element.DisplayText == "STFT: 4 s Hann, 0.5 s hop":
                         element.Size = (25, 2)
                         element.AutoSizeText = False
@@ -1729,9 +1714,7 @@ def create_gui():
             expand_x=True, expand_y=True
         )]], background_color=PANEL, border_width=1, expand_x=True, expand_y=True)
 
-    # ========================================================
-    # RESEARCHER TAB
-    # ========================================================
+    # Researcher tab
 
     researcher_layout = [
         [sg.Text("RESEARCHER / SIGNAL ANALYSIS", font=("Helvetica", 17, "bold"),
@@ -1747,9 +1730,7 @@ def create_gui():
                    expand_x=True, expand_y=True, vertical_alignment="top")]
     ]
 
-    # ========================================================
-    # COMPLETE WINDOW
-    # ========================================================
+    # Complete window
 
     layout = [
         header,
@@ -1783,7 +1764,7 @@ def create_gui():
         resizable=True
     )
 
-    # POST-FINALISATION: configure the layout after FreeSimpleGUI creates the Tk widgets.
+    # Configure the layout after FreeSimpleGUI creates the Tk widgets
     configure_monitor_grid(window)
     configure_right_column(window)
     configure_researcher_grid(window)
@@ -1807,11 +1788,7 @@ def create_gui():
 
     return window
 
-# ============================================================
-# DISPLAY HELPERS
-# ============================================================
-
-# Legends, finite-value scaling and Host HR status.
+# Display helpers
 
 def style_legend(ax, handles, *, compact=False):
     """Style a PPG or HR-comparison legend using the LumiPulse colours.
@@ -1858,6 +1835,8 @@ def update_pulse_signal_box(window, signal_message, signal_ok):
     signal_message is 'Pulse signal good', 'Acquiring pulse signal' or three lines:
     'Check sensor', 'Reason: <all failed checks>' and the measured value against
     its threshold for each.
+
+    Author: Alva Svensson
     """
     if signal_ok:
         state, colour, detail = "\u25cf GOOD", GREEN, "Clear pulse waveform"
@@ -1899,33 +1878,17 @@ def update_hr_display(window, host_hr, signal_message, low_limit, high_limit,
         window["-HR_STATUS-"].update("HEART RATE SIGNAL UNRELIABLE", text_color=AMBER)
     return "normal"
 
-# ============================================================
-# MAIN PROGRAM
-# ============================================================
+# Main program
 
-# Run the GUI event loop: receive records, update displays and manage recording.
-# Structure of main():
-#   A. Setup      build window, create the four live plots and their data buffers
-#   B. State      HR limits, recording variables, helper closures
-#                 (set_recording, show_hr)
-#   C. Start comms  create PPGLink and start its background thread
-#   D. Loop (every ~50 ms):
-#        1. read GUI events          2. log messages from comms.py
-#        3. pull new packets (HostRecords) and buffer/record them
-#        4. if there were new packets: redraw plots + update labels
-#        5. update Researcher plots (max 1x/s), Bluetooth status, session timer
-#        6. handle button/radio events (Apply Limits, Raw/Filtered/Both)
-#   E. Shutdown   stop comms, close any open recording, wait for PDFs
 def main():
     # Select a real serial port via argv, e.g. lp_gui.py COM5.
     # With no argument the built-in ESP32 simulator is used.
+    """Author: Alva Svensson"""
     port = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PORT
 
     window = create_gui()
 
-    # ========================================================
-    # CREATE PPG GRAPH
-    # ========================================================
+    # Create PPG graph
 
     ppg_fig, ppg_ax, ppg_fig_agg = add_plot(
         window["-PPG_CANVAS-"],
@@ -1964,9 +1927,7 @@ def main():
 
     ppg_display_mode = "raw"
 
-    # ========================================================
-    # CREATE HR TREND GRAPH
-    # ========================================================
+    # Create HR trend graph
 
     hr_fig, hr_ax, hr_fig_agg = add_plot(
         window["-HR_TREND_CANVAS-"],
@@ -1989,9 +1950,7 @@ def main():
     hr_fig.subplots_adjust(left=0.11, right=0.98, bottom=0.22, top=0.96)
     hr_fig_agg.draw()
 
-    # ========================================================
-    # CREATE MCU vs HOST HR GRAPH (Researcher tab)
-    # ========================================================
+    # MCU vs Host HR graph (Researcher tab)
 
     cmp_fig, cmp_ax, cmp_fig_agg = add_plot(
         window["-HR_COMPARISON_CANVAS-"],
@@ -2017,9 +1976,7 @@ def main():
     reports = SessionReports()
     session_summary = None
 
-    # ========================================================
-    # PROGRAM VARIABLES
-    # ========================================================
+    # Program variables
 
     # Measure GUI elapsed time with a clock unaffected by changes to the system date/time.
     program_start_time = time.monotonic()
@@ -2029,9 +1986,7 @@ def main():
     latest_record = None
     hr_alarm_state = None
 
-    # ========================================================
-    # RECORDING VARIABLES
-    # ========================================================
+    # Recording variables
     # Recording is controlled exclusively by the ESP32 packet flag.
     recording_state = False
     recording_start_monotonic = None
@@ -2095,9 +2050,7 @@ def main():
                 add_log(window, "Pulse rate back to normal")
             hr_alarm_state = new_alarm_state
 
-    # ========================================================
-    # COMMUNICATION (comms.py)
-    # ========================================================
+    # Communication (comms.py)
 
     communication = {"shown": None}
     display_previous_record = None
@@ -2117,9 +2070,7 @@ def main():
     link.set_limits(low_hr_limit, high_hr_limit)   # ESP32 alarm uses the GUI limits
     link.start()
 
-    # ========================================================
-    # MAIN EVENT LOOP
-    # ========================================================
+    # Main event loop
 
     while True:
 
@@ -2138,9 +2089,7 @@ def main():
             display_interrupted = True
         display_connection_count = connections
 
-        # ----------------------------------------------------
-        # LOG EVENTS FROM COMMS (connect, lost, invalid, ...)
-        # ----------------------------------------------------
+        # Log events from comms
         for line in link.get_events():
             # Recording start/stop is logged by the GUI itself (with the CSV
             # file name), so skip the duplicate lines from comms.py.
@@ -2148,9 +2097,7 @@ def main():
                 continue
             add_log_line(window, line)
 
-        # ----------------------------------------------------
-        # NEW PACKETS (normally one per second)
-        # ----------------------------------------------------
+        # New packets
         # Record and buffer every queued record; render the latest state once per batch.
         records = link.get_records()
 
@@ -2213,9 +2160,7 @@ def main():
             display_interrupted = False
             rec = latest_record
 
-            # ------------------------------------------------
-            # REDRAW PPG GRAPH (Reqts 7, 8)
-            # ------------------------------------------------
+            # Redraw PPG graph (Reqts 7, 8)
             if ppg_display_mode == "raw":
                 raw_ppg_line.set_ydata(raw_ppg_buffer)
                 autoscale_y(ppg_ax, raw_ppg_buffer)
@@ -2232,14 +2177,10 @@ def main():
                 autoscale_y(ppg_ax, raw_centred, filtered_ppg_buffer)
             ppg_fig_agg.draw()
 
-            # ------------------------------------------------
-            # CURRENT HR + ALARM (Reqts 9, 10, 11)
-            # ------------------------------------------------
+            # Current HR + alarm (Reqts 9, 10, 11)
             show_hr(rec.host_hr, rec.signal_message, rec.signal_ok)
 
-            # ------------------------------------------------
-            # KEEP ONLY THE MOST RECENT 60 s OF HR
-            # ------------------------------------------------
+            # Keep the most recent 60 s of HR
             while hr_times and elapsed_time - hr_times[0] > HR_TREND_SECONDS:
                 hr_times.pop(0)
                 hr_values.pop(0)
@@ -2255,9 +2196,7 @@ def main():
             cmp_mcu_line.set_data(display_hr_times, mcu_hr_values)
             researcher_draw_idle(cmp_fig_agg)
 
-            # ------------------------------------------------
-            # RESEARCHER TAB
-            # ------------------------------------------------
+            # Researcher tab
             fmt_bpm = lambda v: "--.- BPM" if v is None else f"{v:.1f} BPM"
             window["-MCU_HR-"].update(fmt_bpm(rec.mcu_hr))
             window["-HOST_HR-"].update(fmt_bpm(rec.host_hr))
@@ -2289,17 +2228,13 @@ def main():
             researcher_dirty = False
         reports.poll(window)
 
-        # ----------------------------------------------------
-        # BLUETOOTH STATUS + NO-DATA ALARM (Reqt 14)
-        # ----------------------------------------------------
+        # Bluetooth status + no-data alarm (Reqt 14)
         update_communication_display(window, communication, link)
         # Suppress old amplitude during the no-data alarm, including after queued-record updates.
         if link.no_data_alarm:
             window["-AMPLITUDE-"].update("--")
 
-        # ----------------------------------------------------
-        # SESSION TIMER
-        # ----------------------------------------------------
+        # Session timer
         if recording_state and recording_start_monotonic is not None:
             session_elapsed = now - recording_start_monotonic
             hours = int(session_elapsed // 3600)
@@ -2307,9 +2242,7 @@ def main():
             seconds = int(session_elapsed % 60)
             window["-SESSION_TIME-"].update(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
 
-        # ----------------------------------------------------
-        # APPLY USER-DEFINED HR LIMITS
-        # ----------------------------------------------------
+        # Apply user-defined HR limits
         if event == "-APPLY_LIMITS-":
             try:
                 new_low_limit = float(values["-LOW_HR_LIMIT-"])
@@ -2343,9 +2276,7 @@ def main():
                 window["-HR_LIMIT_ERROR-"].update("Invalid HR limits")
                 add_log(window, "Invalid HR limits: enter numeric values.")
 
-        # ----------------------------------------------------
-        # PPG DISPLAY SELECTION
-        # ----------------------------------------------------
+        # PPG display selection
         if event in ("-SHOW_RAW-", "-SHOW_FILTERED-", "-SHOW_BOTH-"):
             ppg_display_mode = {
                 "-SHOW_RAW-": "raw",
@@ -2381,9 +2312,7 @@ def main():
             ppg_fig_agg.draw()
             add_log(window, f"PPG display changed to {ppg_display_mode.capitalize()}.")
 
-    # ========================================================
-    # NORMAL SHUTDOWN AND SESSION FINALISATION
-    # ========================================================
+    # Normal shutdown and session finalisation
 
     # Stop reception and finalise the session; queued records are not drained on this path.
     link.stop()
@@ -2393,9 +2322,7 @@ def main():
     reports.close(window)
     window.close()
 
-# ============================================================
-# RUN PROGRAM
-# ============================================================
+# Run program
 
 if __name__ == "__main__":
     main()
