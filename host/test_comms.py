@@ -136,7 +136,7 @@ def test_packet_format():
 
     # ESP32 C++ implementation must produce identical bytes
     cxx = shutil.which("g++") or shutil.which("clang++")
-    src = os.path.join(HERE, "..", "A2_Lumi")
+    src = os.path.join(HERE, "..", "ESP32_Lumi")
     if not cxx:
         print("  [SKIP] C++ compiler not found - ESP32 packet.cpp cross-check skipped")
         return
@@ -347,7 +347,7 @@ def test_limits():
 
     # C++ parser accepts what Python builds and rejects corruption
     cxx = shutil.which("g++") or shutil.which("clang++")
-    src = os.path.join(HERE, "..", "A2_Lumi")
+    src = os.path.join(HERE, "..", "ESP32_Lumi")
     if not cxx:
         print("  [SKIP] C++ compiler not found - ESP32 parseLimits cross-check skipped")
         return

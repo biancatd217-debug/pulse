@@ -35,7 +35,7 @@ The host also sends the ESP32 the heart-rate alarm limits set in the GUI:
             the ESP32 alarm/buzzer then uses these instead of its defaults.
             CC is the same XOR checksum.
 
-The ESP32 side of this format is in Code/A2_Lumi/packet.cpp.
+The ESP32 side of this format is in Code/ESP32_Lumi/packet.cpp.
 Both sides must be changed together.
 
 Author: Bianca Dibden

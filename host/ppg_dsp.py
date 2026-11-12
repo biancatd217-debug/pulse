@@ -569,7 +569,7 @@ def assess_signal(raw, filtered, hr_peak, hr_fft, purity, ibis=None):
 #
 #   host_hr = hr_peak (shown on the GUI; the FFT value is only a cross-check)
 #
-# The MCU (A2_Lumi.ino) does the first two stages in a simpler form; it has no
+# The MCU (ESP32_Lumi.ino) does the first two stages in a simpler form; it has no
 # FFT and no quality checks. See the Research note "ESP32 vs Host Signal Processing".
 # ---------------------------------------------------------------------------
 class PPGProcessor:

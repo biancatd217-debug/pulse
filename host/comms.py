@@ -43,11 +43,11 @@ Date: 15-Oct-2026
 # ---------------------------------------------------------------------------
 # HOW THE PIECES CONNECT (read this first)
 #
-#   ESP32 (A2_Lumi.ino)                          HOST (this folder)
-#   -------------------                          ------------------
+#   ESP32 (ESP32_Lumi.ino)                       HOST (this folder)
+#   ----------------------                       ------------------
 #   samples PPG @ 50 Hz
 #   every 50 samples -> buildPacket()  ==BT==>   comms.py  PPGLink._read_once()
-#     (A2_Lumi/packet.cpp)                         |  bytes -> lines ('\n' framing)
+#     (ESP32_Lumi/packet.cpp)                      |  bytes -> lines ('\n' framing)
 #                                                  v
 #                                                PPGLink._handle_line()
 #                                                  |  1. packet_format.parse_packet()  length/'$'/checksum/ranges
