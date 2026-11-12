@@ -464,7 +464,6 @@ def fft_heart_rate(x, fs=FS, nfft=FFT_NFFT, fmin=HR_MIN_BPM / 60.0, fmax=3.5):
         Fraction of in-band power within +/-0.15 Hz of the peak (0-1). A clean
         periodic pulse gives a high value; noise or motion gives a low one.
 
-    Author: Bianca Dibden
     """
     x = np.asarray(x, dtype=float)
     if len(x) < 2 * fs:
@@ -632,7 +631,7 @@ class PPGProcessor:
         # 2. Find beats in the filtered signal, sample by sample.
         thresholds, beats = self.detector.process(filtered)
 
-        # 3. Keep the last 8 s of data: the FFT and the quality checks need
+        # 3. Keep th e last 8 s of data: the FFT and the quality checks need
         #    more than the 1 s that arrives in each packet.
         self.raw_hist.extend(raw)
         self.filt_hist.extend(filtered)

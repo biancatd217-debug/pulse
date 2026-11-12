@@ -40,31 +40,6 @@ Author: Bianca Dibden
 Date: 15-Oct-2026
 """
 
-# ---------------------------------------------------------------------------
-# HOW THE PIECES CONNECT (read this first)
-#
-#   ESP32 (ESP32_Lumi.ino)                       HOST (this folder)
-#   ----------------------                       ------------------
-#   samples PPG @ 50 Hz
-#   every 50 samples -> buildPacket()  ==BT==>   comms.py  PPGLink._read_once()
-#     (ESP32_Lumi/packet.cpp)                      |  bytes -> lines ('\n' framing)
-#                                                  v
-#                                                PPGLink._handle_line()
-#                                                  |  1. packet_format.parse_packet()  length/'$'/checksum/ranges
-#                                                  |  2. SequenceTracker.check()       lost / duplicate / restart
-#                                                  |  3. ppg_dsp.PPGProcessor.process_packet()
-#                                                  |        filter -> beats -> HR -> FFT -> quality
-#                                                  v
-#                                                HostRecord  --queue-->  GUI (lp_gui.py)
-#                                                                         calls get_records() / get_events()
-#
-#   GUI "Apply Limits" -> PPGLink.set_limits() -> packet_format.build_limits()
-#   -> sent back to the ESP32 once a second ($LIM,...), read by readHostLimits().
-#
-# Threads: the GUI runs on the main thread; PPGLink._run() runs in a background
-# thread and talks to the GUI only through two thread-safe queues (_records and
-# _events), so the GUI never blocks on Bluetooth.
-# ---------------------------------------------------------------------------
 
 from __future__ import annotations
 

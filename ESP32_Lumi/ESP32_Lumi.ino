@@ -3,8 +3,7 @@
 **
 ** Authors: Abigail Cameron (MCU: sensing, filtering, beat detection, button,
 **          LEDs, LCD, buzzer, alarm)
-**          Bianca Dibden (Bluetooth communications: packets, host limits,
-**          sender task)
+**         
 **
 ** Structure: Lab W3 scheduler, latchingSwitch and calcPulse examples.
 ** Filter/percentiles: adapted from our previous bandpassadapt sketch.
