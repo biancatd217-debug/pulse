@@ -40,7 +40,6 @@ Author: Bianca Dibden
 Date: 15-Oct-2026
 """
 
-
 from __future__ import annotations
 
 import argparse
