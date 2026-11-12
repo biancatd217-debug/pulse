@@ -1,8 +1,6 @@
 /*
 ** Class to debounce switches.
-**
-** Author:  Greg Watkins
-** Date:    27 Aug 2021
+** Authors: Abigail Cameron 
 **
 */
 

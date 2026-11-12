@@ -14,7 +14,7 @@ Run from the project root:
 
 Use the actual Bluetooth serial port for hardware; no argument defaults to SIM.
 Authors: Alva Svensson (GUI)
-         Bianca Dibden (integration with comms.py / ppg_dsp.py)
+        
 """
 
 import FreeSimpleGUI as sg

@@ -115,7 +115,7 @@ def checksum(payload: bytes) -> int:
         c ^= b
     return c
 
-
+###SIMMMMMMMMMM 
 def build_packet(seq: int, mcu_hr: float, recording: bool, samples) -> bytes:
     """
     Build a packet exactly as the ESP32 does. Used by the simulator and tests.
